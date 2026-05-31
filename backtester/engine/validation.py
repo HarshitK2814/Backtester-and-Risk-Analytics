@@ -1,3 +1,21 @@
+"""
+Out-of-Sample Validation Engine
+================================
+
+Provides two validation modes so retail traders can see whether a strategy's
+backtest results hold on data the strategy never "saw":
+
+  holdout       — simple train/test split.  Run the same user params on both
+                  halves.  Fast (2 backtest runs).  Measures consistency, not
+                  overfitting (since params are user-set, not fitted).
+
+  walk_forward  — classic gold standard.  For each train window, grid-search
+                  the best params by Sharpe, then apply them to the next
+                  out-of-sample step.  Roll forward.  The final OOS equity
+                  curve is genuinely unseen-data performance.
+
+Both return a `validation` dict that main.py attaches to the API response.
+"""
 from __future__ import annotations
 
 import itertools
@@ -13,8 +31,16 @@ from strategies import STRATEGY_REGISTRY
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Compact parameter grids for walk-forward optimisation
+# ─────────────────────────────────────────────────────────────────────────────
+# Deliberately small (≤ 24 combos per strategy) so walk-forward completes
+# within a few seconds per window.
 
 def _wf_grid(strategy: str, lower: float = 0, upper: float = 0, capital: float = 10_000) -> list[dict]:
+    # Invest amounts scale with capital so Indian ₹20L runs don't use ₹200 lots.
+    # Fractions: 1%, 3%, 8% of capital per order — small enough to diversify,
+    # large enough to clear lot-size minimums on large-capital Indian instruments.
     inv_sm = max(100, capital * 0.01)
     inv_md = max(200, capital * 0.03)
     inv_lg = max(500, capital * 0.08)
@@ -32,7 +58,7 @@ def _wf_grid(strategy: str, lower: float = 0, upper: float = 0, capital: float =
                         "invest_per_level_usd": invest,
                         "quantity_per_level":   0.0,
                     })
-        return rows
+        return rows  # 18 combos
 
     if strategy == "DCA":
         rows = []
@@ -48,7 +74,7 @@ def _wf_grid(strategy: str, lower: float = 0, upper: float = 0, capital: float =
                             "exit_type":          exit_type,
                             "profit_target_pct":  tp,
                         })
-        return rows
+        return rows  # 24 combos
 
     if strategy == "PLA":
         rows = []
@@ -65,10 +91,14 @@ def _wf_grid(strategy: str, lower: float = 0, upper: float = 0, capital: float =
                         "take_profit_pct":      tp,
                         "stop_loss_pct":        3.0,
                     })
-        return rows
+        return rows  # 18 combos
 
     return []
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core: run a single segment (df slice → signals → simulate → metrics)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _segment_metrics(
     df:              pd.DataFrame,
@@ -77,7 +107,12 @@ def _segment_metrics(
     sim_kwargs:      dict,
     capital:         float,
 ) -> dict[str, Any] | None:
+    """
+    Run strategy → simulator → metrics on `df` and return the metrics dict.
+    Returns None if something fails (e.g. 0 trades), so callers can skip.
+    """
     try:
+        # Auto-compute GRID bounds from this slice if needed
         if strategy_cls.__name__ == "GridStrategy":
             lo = float(strategy_params.get("lower_bound", 0) or 0)
             hi = float(strategy_params.get("upper_bound", 0) or 0)
@@ -112,6 +147,10 @@ def _segment_metrics(
         return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Holdout split
+# ─────────────────────────────────────────────────────────────────────────────
+
 def run_holdout(
     df:              pd.DataFrame,
     strategy_name:   str,
@@ -120,13 +159,33 @@ def run_holdout(
     capital:         float,
     train_ratio:     float = 0.7,
 ) -> dict[str, Any]:
+    """
+    Split df into train (in-sample) and test (out-of-sample) portions.
+    Run the SAME strategy params on both halves.
+
+    For GRID, bounds are auto-computed on train only and re-applied to test
+    (honest OOS: bounds are "fitted" on train, then used as-is on test).
+
+    Returns:
+        {
+          mode, train_ratio, split_date,
+          in_sample:      {metrics + num_candles},
+          out_of_sample:  {metrics + num_candles},
+          verdict:        "stable" | "degraded" | "failed"
+        }
+    """
     n = len(df)
     split_idx = max(1, min(n - 1, int(n * train_ratio)))
     df_train = df.iloc[:split_idx].reset_index(drop=True)
     df_test  = df.iloc[split_idx:].reset_index(drop=True)
 
     split_date = str(df.iloc[split_idx]["timestamp"])[:10]
+    logger.info(
+        "Holdout split: train=%d candles (%.0f%%)  test=%d candles  split_date=%s",
+        len(df_train), 100 * train_ratio, len(df_test), split_date,
+    )
 
+    # For GRID: compute bounds on train, carry to test
     train_params = dict(strategy_params)
     if strategy_name == "GRID":
         lo = float(train_params.get("lower_bound", 0) or 0)
@@ -155,6 +214,8 @@ def run_holdout(
 
     in_clean  = _clean(in_m)
     out_clean = _clean(out_m)
+
+    # Verdict: did OOS hold up?
     verdict = _holdout_verdict(in_m, out_m)
 
     stitched_eq = []
@@ -166,6 +227,8 @@ def run_holdout(
         factor = in_eq[-1] / out_eq[0] if out_eq[0] > 0 else 1.0
         stitched_eq = in_eq + [v * factor for v in out_eq[1:]]
         stitched_ts = in_m["_timestamps_raw"] + out_m["_timestamps_raw"]
+
+        # calculate drawdowns
         eq_arr = np.array(stitched_eq, dtype=float)
         running_max = np.maximum.accumulate(eq_arr)
         dd_arr = (eq_arr - running_max) / running_max
@@ -185,18 +248,26 @@ def run_holdout(
     }
 
 
+
 def _holdout_verdict(in_m, out_m) -> str:
+    """Classify whether OOS held up vs in-sample."""
     if in_m is None or out_m is None:
         return "insufficient_data"
+
     in_sharpe  = in_m.get("sharpe_ratio", 0) or 0
     out_sharpe = out_m.get("sharpe_ratio", 0) or 0
     out_ret    = out_m.get("total_return_pct", 0) or 0
-    if out_ret < 0:
-        return "failed"
-    if in_sharpe > 0.1 and out_sharpe < in_sharpe * 0.5:
-        return "degraded"
-    return "stable"
 
+    if out_ret < 0:
+        return "failed"      # OOS actually lost money
+    if in_sharpe > 0.1 and out_sharpe < in_sharpe * 0.5:
+        return "degraded"    # Sharpe dropped >50%
+    return "stable"          # OOS looks consistent
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Walk-forward
+# ─────────────────────────────────────────────────────────────────────────────
 
 def run_walk_forward(
     df:              pd.DataFrame,
@@ -207,15 +278,35 @@ def run_walk_forward(
     window:          int = 252,
     step:            int = 63,
 ) -> dict[str, Any]:
+    """
+    Classic walk-forward: grid-search on each train window, apply best params
+    to the next out-of-sample step.  Roll forward until df is exhausted.
+
+    Returns:
+        {
+          mode, window, step,
+          windows: [ {period, train_period, best_params_summary,
+                      return_pct, sharpe, max_dd_pct, num_trades}, ... ],
+          out_of_sample: {aggregated metrics across all test segments}
+        }
+    """
     n = len(df)
     if n < window + step:
+        logger.warning(
+            "Walk-forward: not enough data (%d candles, need at least %d). "
+            "Returning empty.", n, window + step,
+        )
         return _empty_walk_forward(window, step)
 
     strategy_cls = STRATEGY_REGISTRY[strategy_name]
     windows_out  = []
+
+    # Track training window and test segment curves for walk-forward validation curve stitching
     first_success_train_eq = []
     first_success_train_ts = []
     test_segments = []
+
+    # Collect all OOS equity points (stitched together)
     all_oos_eq: list[float] = [capital]
     all_oos_ts: list[str]   = []
     all_oos_trades: list[dict] = []
@@ -233,6 +324,7 @@ def run_walk_forward(
         test_start_date  = str(df.iloc[train_end]["timestamp"])[:10]
         test_end_date    = str(df.iloc[test_end - 1]["timestamp"])[:10]
 
+        # ── Grid-search on train window ───────────────────────────────────
         lo = hi = 0.0
         if strategy_name == "GRID":
             prices  = df_train["close"].astype(float)
@@ -256,6 +348,7 @@ def run_walk_forward(
                 best_metrics = m
 
         if best_params is None:
+            logger.debug("Walk-forward window %d: no valid train combo", win_num)
             start += step
             win_num += 1
             continue
@@ -264,9 +357,12 @@ def run_walk_forward(
             first_success_train_eq = best_metrics.get("_equity_curve_raw", [])
             first_success_train_ts = best_metrics.get("_timestamps_raw", [])
 
+
+        # ── Apply best params to OOS test slice ───────────────────────────
         oos_m = _segment_metrics(df_test, strategy_cls, best_params, sim_kwargs, capital)
 
         if oos_m is not None:
+            # Stitch: adjust OOS equity by last known OOS equity level
             base = all_oos_eq[-1]
             oos_raw = oos_m.get("_equity_curve_raw", [])
             oos_ts = oos_m.get("_timestamps_raw", [])
@@ -275,11 +371,13 @@ def run_walk_forward(
                 factor = base / oos_raw[0]
                 all_oos_eq.extend([v * factor for v in oos_raw[1:]])
             all_oos_ts.extend(oos_m.get("_timestamps_raw", []))
+            # Offset trade times to distinguish windows (keep as-is; already ISO)
             all_oos_trades.extend(oos_m.get("trades", []))
+
             windows_out.append({
                 "window_num":       win_num + 1,
-                "train_period":     f"{train_start_date} -> {train_end_date}",
-                "test_period":      f"{test_start_date} -> {test_end_date}",
+                "train_period":     f"{train_start_date} → {train_end_date}",
+                "test_period":      f"{test_start_date} → {test_end_date}",
                 "best_params":      _params_summary(strategy_name, best_params),
                 "train_sharpe":     round(best_sharpe, 3),
                 "return_pct":       round(oos_m.get("total_return_pct", 0), 3),
@@ -291,8 +389,8 @@ def run_walk_forward(
         else:
             windows_out.append({
                 "window_num":   win_num + 1,
-                "train_period": f"{train_start_date} -> {train_end_date}",
-                "test_period":  f"{test_start_date} -> {test_end_date}",
+                "train_period": f"{train_start_date} → {train_end_date}",
+                "test_period":  f"{test_start_date} → {test_end_date}",
                 "best_params":  _params_summary(strategy_name, best_params),
                 "train_sharpe": round(best_sharpe, 3),
                 "return_pct":   0.0, "sharpe": 0.0, "max_dd_pct": 0.0,
@@ -302,6 +400,7 @@ def run_walk_forward(
         start  += step
         win_num += 1
 
+    # ── Aggregate OOS metrics across all test windows ─────────────────────
     if len(all_oos_eq) > 1:
         agg_metrics = calculate_metrics(
             trades          = all_oos_trades,
@@ -318,6 +417,13 @@ def run_walk_forward(
             "annualised_return_pct": 0.0, "sortino_ratio": 0.0,
         }
 
+    logger.info(
+        "Walk-forward: %d windows completed  OOS return=%.2f%%  OOS Sharpe=%.2f",
+        len(windows_out),
+        agg_clean.get("total_return_pct", 0),
+        agg_clean.get("sharpe_ratio", 0),
+    )
+
     val_eq = []
     val_ts = []
     val_dd = []
@@ -330,6 +436,8 @@ def run_walk_forward(
                 factor = base / oos_raw[0] if oos_raw[0] > 0 else 1.0
                 val_eq.extend([v * factor for v in oos_raw[1:]])
                 val_ts.extend(oos_ts)
+
+        # calculate drawdowns
         val_eq_arr = np.array(val_eq, dtype=float)
         val_running_max = np.maximum.accumulate(val_eq_arr)
         val_dd_arr = (val_eq_arr - val_running_max) / val_running_max
@@ -348,6 +456,11 @@ def run_walk_forward(
         "validation_drawdowns": val_dd,
     }
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _params_summary(strategy: str, params: dict) -> str:
     if strategy == "GRID":

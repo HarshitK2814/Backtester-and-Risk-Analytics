@@ -1,55 +1,31 @@
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
-.Python
-*.egg-info/
-dist/
-build/
-
-# Virtual environments
 venv/
-.venv/
-env/
 .env
-
-# Database
 *.db
-*.sqlite
-*.sqlite3
+*.db-shm
+*.db-wal
 
-# Logs
-logs/
-*.log
-
-# Runtime directories (auto-created by config.py)
-data_storage/
-charts/
-reports/
-
-# Node / frontend
+# Node.js
 node_modules/
 dist/
-.vite/
-*.local
 
-# Test cache
-.pytest_cache/
-.coverage
-htmlcov/
+# Build artifacts
+*.tsbuildinfo
 
-# IDE
+# IDE & tools
+.claude/
+.cursor/
 .vscode/
-.idea/
-*.swp
-*.swo
 
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
+# Generated outputs
+logs/
+reports/
+optimizer_results/
 
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
+# Large binary / model files
+*.pkl
+*.joblib

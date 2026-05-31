@@ -1,85 +1,149 @@
+"""
+SQLAlchemy ORM models for the backtester system.
+
+Tables:
+  - ohlcv_data       : raw market data
+  - backtests        : backtest job metadata
+  - backtest_results : aggregated performance metrics
+  - trades           : individual trade records
+"""
 import json
 from datetime import datetime
-from sqlalchemy import Column, Integer, Float, String, DateTime, Date, Text, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import (
+    Column, Integer, Float, String, DateTime, Date,
+    Text, ForeignKey, UniqueConstraint, Index,
+)
 from sqlalchemy.orm import relationship
 from database import Base
 
 
 class OHLCVData(Base):
+    """Stores raw OHLCV candle data fetched from external sources."""
     __tablename__ = "ohlcv_data"
     __table_args__ = (
         UniqueConstraint("symbol", "timestamp", "source", name="uq_ohlcv"),
         Index("ix_ohlcv_symbol_ts", "symbol", "timestamp"),
     )
-    id            = Column(Integer, primary_key=True, index=True)
-    symbol        = Column(String(20), nullable=False)
-    timestamp     = Column(DateTime, nullable=False)
-    open          = Column(Float, nullable=False)
-    high          = Column(Float, nullable=False)
-    low           = Column(Float, nullable=False)
-    close         = Column(Float, nullable=False)
-    volume        = Column(Float, nullable=False)
-    source        = Column(String(20), default="binance")
+
+    id           = Column(Integer, primary_key=True, index=True)
+    symbol       = Column(String(20), nullable=False)
+    timestamp    = Column(DateTime, nullable=False)
+    open         = Column(Float, nullable=False)
+    high         = Column(Float, nullable=False)
+    low          = Column(Float, nullable=False)
+    close        = Column(Float, nullable=False)
+    volume       = Column(Float, nullable=False)
+    source       = Column(String(20), default="binance")
     quality_score = Column(Float, default=100.0)
-    created_at    = Column(DateTime, default=datetime.utcnow)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
     def to_dict(self):
-        return {"timestamp": self.timestamp.isoformat(), "open": self.open, "high": self.high,
-                "low": self.low, "close": self.close, "volume": self.volume}
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "open":   self.open,
+            "high":   self.high,
+            "low":    self.low,
+            "close":  self.close,
+            "volume": self.volume,
+        }
 
 
 class Backtest(Base):
+    """Tracks each backtest run (metadata / job record)."""
     __tablename__ = "backtests"
-    id         = Column(String(36), primary_key=True)
+
+    id         = Column(String(36), primary_key=True)   # UUID
     symbol     = Column(String(20), nullable=False)
     strategy   = Column(String(20), nullable=False)
     start_date = Column(Date, nullable=False)
     end_date   = Column(Date, nullable=False)
     capital    = Column(Float, nullable=False)
-    params     = Column(Text)
-    status     = Column(String(20), default="pending")
+    params     = Column(Text)          # JSON-encoded strategy params
+    status     = Column(String(20), default="pending")   # pending/running/done/error
     error_msg  = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
-    result     = relationship("BacktestResult", back_populates="backtest", uselist=False)
-    trades     = relationship("Trade", back_populates="backtest")
+
+    result = relationship("BacktestResult", back_populates="backtest", uselist=False)
+    trades = relationship("Trade", back_populates="backtest")
+
     @property
     def params_dict(self):
         return json.loads(self.params) if self.params else {}
 
 
 class BacktestResult(Base):
+    """Aggregated performance metrics for a finished backtest."""
     __tablename__ = "backtest_results"
+
     backtest_id       = Column(String(36), ForeignKey("backtests.id"), primary_key=True)
-    total_return      = Column(Float); total_return_pct  = Column(Float)
-    sharpe_ratio      = Column(Float); sortino_ratio     = Column(Float)
-    max_drawdown      = Column(Float); profit_factor     = Column(Float)
-    win_rate          = Column(Float); num_trades        = Column(Integer)
-    trades_per_day    = Column(Float); avg_trade_duration = Column(Float)
-    best_trade        = Column(Float); worst_trade       = Column(Float)
-    results_json      = Column(Text)
+    total_return      = Column(Float)
+    total_return_pct  = Column(Float)
+    sharpe_ratio      = Column(Float)
+    sortino_ratio     = Column(Float)
+    max_drawdown      = Column(Float)
+    profit_factor     = Column(Float)
+    win_rate          = Column(Float)
+    num_trades        = Column(Integer)
+    trades_per_day    = Column(Float)
+    avg_trade_duration = Column(Float)   # hours
+    best_trade        = Column(Float)
+    worst_trade       = Column(Float)
+    results_json      = Column(Text)     # full JSON blob (equity curve, drawdowns, …)
+
     backtest = relationship("Backtest", back_populates="result")
+
+    @property
+    def results_dict(self):
+        return json.loads(self.results_json) if self.results_json else {}
+
     def to_dict(self):
-        return {"backtest_id": self.backtest_id, "total_return": self.total_return,
-                "total_return_pct": self.total_return_pct, "sharpe_ratio": self.sharpe_ratio,
-                "sortino_ratio": self.sortino_ratio, "max_drawdown": self.max_drawdown,
-                "profit_factor": self.profit_factor, "win_rate": self.win_rate,
-                "num_trades": self.num_trades, "trades_per_day": self.trades_per_day,
-                "avg_trade_duration": self.avg_trade_duration,
-                "best_trade": self.best_trade, "worst_trade": self.worst_trade}
+        return {
+            "backtest_id":        self.backtest_id,
+            "total_return":       self.total_return,
+            "total_return_pct":   self.total_return_pct,
+            "sharpe_ratio":       self.sharpe_ratio,
+            "sortino_ratio":      self.sortino_ratio,
+            "max_drawdown":       self.max_drawdown,
+            "profit_factor":      self.profit_factor,
+            "win_rate":           self.win_rate,
+            "num_trades":         self.num_trades,
+            "trades_per_day":     self.trades_per_day,
+            "avg_trade_duration": self.avg_trade_duration,
+            "best_trade":         self.best_trade,
+            "worst_trade":        self.worst_trade,
+        }
 
 
 class Trade(Base):
+    """Individual trade records linked to a backtest."""
     __tablename__ = "trades"
-    __table_args__ = (Index("ix_trades_backtest", "backtest_id"),)
+    __table_args__ = (
+        Index("ix_trades_backtest", "backtest_id"),
+    )
+
     id          = Column(Integer, primary_key=True, index=True)
     backtest_id = Column(String(36), ForeignKey("backtests.id"), nullable=False)
-    entry_time  = Column(DateTime, nullable=False); entry_price = Column(Float, nullable=False)
-    exit_time   = Column(DateTime); exit_price  = Column(Float)
-    quantity    = Column(Float); pnl = Column(Float); pnl_pct = Column(Float)
-    fees        = Column(Float); side = Column(String(10), default="LONG")
-    backtest    = relationship("Backtest", back_populates="trades")
+    entry_time  = Column(DateTime, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    exit_time   = Column(DateTime)
+    exit_price  = Column(Float)
+    quantity    = Column(Float)
+    pnl         = Column(Float)
+    pnl_pct     = Column(Float)
+    fees        = Column(Float)
+    side        = Column(String(10), default="LONG")
+
+    backtest = relationship("Backtest", back_populates="trades")
+
     def to_dict(self):
-        return {"entry_time": self.entry_time.isoformat() if self.entry_time else None,
-                "entry_price": self.entry_price,
-                "exit_time": self.exit_time.isoformat() if self.exit_time else None,
-                "exit_price": self.exit_price, "quantity": self.quantity,
-                "pnl": self.pnl, "pnl_pct": self.pnl_pct, "fees": self.fees, "side": self.side}
+        return {
+            "entry_time":  self.entry_time.isoformat() if self.entry_time else None,
+            "entry_price": self.entry_price,
+            "exit_time":   self.exit_time.isoformat() if self.exit_time else None,
+            "exit_price":  self.exit_price,
+            "quantity":    self.quantity,
+            "pnl":         self.pnl,
+            "pnl_pct":     self.pnl_pct,
+            "fees":        self.fees,
+            "side":        self.side,
+        }

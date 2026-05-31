@@ -1,3 +1,4 @@
+# strategies package
 from strategies.grid import GridStrategy
 from strategies.dca  import DCAStrategy
 from strategies.pla  import PLAStrategy
@@ -8,4 +9,4 @@ STRATEGY_REGISTRY = {
     "PLA":  PLAStrategy,
 }
 
-__all__ = ["STRATEGY_REGISTRY", "GridStrategy", "DCAStrategy", "PLAStrategy"]
+__all__ = ["GridStrategy", "DCAStrategy", "PLAStrategy", "STRATEGY_REGISTRY"]

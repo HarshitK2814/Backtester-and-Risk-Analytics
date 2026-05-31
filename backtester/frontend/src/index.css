@@ -2,67 +2,137 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── TradeVed Brand Design System ───────────────────────────────────────── */
+
 *, *::before, *::after { box-sizing: border-box; }
 
 :root {
-  --tv-accent:      #A8EC3A;
-  --tv-accent-dark: #8BCB2B;
-  --tv-bg:          #FAFAFA;
-  --tv-s1:          #FFFFFF;
-  --tv-s2:          #F1F5F9;
-  --tv-s3:          #E2E8F0;
-  --tv-border:      #E2E8F0;
-  --tv-text:        #0F172A;
-  --tv-muted:       #64748B;
-  --tv-dim:         #94A3B8;
-  --tv-green:       #22C55E;
-  --tv-red:         #EF4444;
-  --tv-amber:       #F59E0B;
-  --tv-pastel-green: #E2F6CD;
-  --tv-pastel-pink:  #FDE2E4;
-  --tv-pastel-blue:  #E2EDF8;
+  --tv-accent:   #A8EC3A;  /* Lime green from the image */
+  --tv-accent-dark:#8BCB2B; 
+  --tv-bg:       #FAFAFA;
+  --tv-s1:       #FFFFFF;
+  --tv-s2:       #F1F5F9;
+  --tv-s3:       #E2E8F0;
+  --tv-border:   #E2E8F0;
+  --tv-text:     #0F172A;
+  --tv-muted:    #64748B;
+  --tv-dim:      #94A3B8;
+  --tv-green:    #22C55E;
+  --tv-red:      #EF4444;
+  --tv-amber:    #F59E0B;
+  
+  --tv-pastel-green: #E2F6CD; /* Soft green */
+  --tv-pastel-pink:  #FDE2E4; /* Soft pink */
+  --tv-pastel-blue:  #E2EDF8; /* Soft blue */
 }
 
 html, body, #root {
-  height: 100%; margin: 0; padding: 0;
-  background: var(--tv-bg); color: var(--tv-text);
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--tv-bg);
+  color: var(--tv-text);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
+/* ── Custom scrollbars ───────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--tv-s3); border-radius: 6px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--tv-muted); }
 
+/* ── Range slider ────────────────────────────────────────────────────────── */
 input[type="range"] {
-  -webkit-appearance: none; width: 100%; height: 4px;
-  border-radius: 2px; background: var(--tv-s3); outline: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--tv-s3);
+  outline: none;
 }
 input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
-  background: var(--tv-accent); cursor: pointer;
-  border: 2px solid var(--tv-bg); box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--tv-accent);
+  cursor: pointer;
+  border: 2px solid var(--tv-bg);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
   transition: transform 0.2s;
 }
-input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.1); }
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
 
+/* ── Inputs ─────────────────────────────────────────────────────────── */
+input[type="date"], input[type="text"], input[type="number"], select {
+  background: var(--tv-s2);
+  border: none;
+  color: var(--tv-text);
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+  outline: none;
+  transition: box-shadow 0.2s, background 0.2s;
+}
+input[type="date"]:focus, input[type="text"]:focus, input[type="number"]:focus, select:focus {
+  background: #FFFFFF;
+  box-shadow: 0 0 0 2px var(--tv-accent);
+}
+
+select {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2364748B' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 10px center;
+  background-repeat: no-repeat;
+  background-size: 16px;
+  padding-right: 32px !important;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+/* ── Recharts ────────────────────────────────────────────────────────────── */
 .recharts-tooltip-wrapper { outline: none !important; }
 .recharts-cartesian-axis-tick text { fill: var(--tv-muted) !important; font-size: 11px; }
 
+/* ── Animations ──────────────────────────────────────────────────────────── */
 @keyframes spin { to { transform: rotate(360deg); } }
 .animate-spin { animation: spin 1s linear infinite; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 .fade-in { animation: fadeIn 0.25s ease-out forwards; }
-@keyframes pulseLime { 0%, 100% { box-shadow: 0 4px 15px rgba(168,236,58,0.3); } 50% { box-shadow: 0 8px 25px rgba(168,236,58,0.5); } }
+
+@keyframes pulseLime {
+  0%, 100% { box-shadow: 0 4px 15px rgba(168,236,58,0.3); }
+  50%       { box-shadow: 0 8px 25px rgba(168,236,58,0.5); }
+}
 .glow-pulse { animation: pulseLime 2.5s ease-in-out infinite; }
 
-.tv-soft-shadow { box-shadow: 0 4px 24px rgba(0,0,0,0.04); }
+/* ── Card shimmer on hover ───────────────────────────────────────────────── */
+.tv-soft-shadow {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
+}
+
 .tv-card {
-  background: var(--tv-s1); border-radius: 20px;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.04);
+  background: var(--tv-s1);
+  border-radius: 20px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
   border: 1px solid rgba(0,0,0,0.02);
   transition: transform 0.2s, box-shadow 0.2s;
 }
-.tv-card:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(0,0,0,0.08); }
-.tv-nav-active { background: var(--tv-accent); color: #000 !important; font-weight: 600; }
+.tv-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+}
+
+.tv-nav-active {
+  background: var(--tv-accent);
+  color: #000 !important;
+  font-weight: 600;
+}
