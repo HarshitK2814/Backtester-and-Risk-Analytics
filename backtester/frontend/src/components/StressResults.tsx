@@ -553,7 +553,7 @@ function TradeMCCard({ tmc }: { tmc: TradeMCResult }) {
 interface Props { result: StressResponse; currency: string; locale: string; }
 
 export default function StressResults({ result, currency, locale }: Props) {
-  const { baseline, stressed, monte_carlo: mc, series, scenario, robustness, trade_mc } = result;
+  const { baseline, stressed, monte_carlo: mc, series, scenario, robustness, trade_mc, walk_forward: wf } = result;
 
   const baseRet     = (baseline.total_return_pct   ?? 0) as number;
   const baseSharpe  = (baseline.sharpe_ratio        ?? 0) as number;
@@ -619,6 +619,71 @@ export default function StressResults({ result, currency, locale }: Props) {
 
       {/* Robustness Score Gauge — shown when MC data is available */}
       {robustness && <RobustnessGauge rob={robustness} />}
+
+      {/* Walk-Forward panel — shown when validation was run */}
+      {wf && wf.windows && wf.windows.length > 0 && (
+        <Card>
+          <SectionTitle
+            sub={`${wf.windows.length} walk-forward windows · WFE = OOS Sharpe ÷ IS Sharpe`}
+          >
+            Walk-Forward Validation
+          </SectionTitle>
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="bg-indigo-50 rounded-xl p-3 border border-indigo-100 text-center">
+              <p className="text-[10px] font-semibold uppercase text-indigo-500 mb-1">OOS Sharpe</p>
+              <p className="text-xl font-bold text-indigo-700">
+                {fmt(wf.out_of_sample?.sharpe_ratio ?? 0)}
+              </p>
+            </div>
+            <div className="bg-indigo-50 rounded-xl p-3 border border-indigo-100 text-center">
+              <p className="text-[10px] font-semibold uppercase text-indigo-500 mb-1">OOS Return</p>
+              <p className="text-xl font-bold text-indigo-700">
+                {sign(wf.out_of_sample?.total_return_pct ?? 0)}%
+              </p>
+            </div>
+            <div className="bg-indigo-50 rounded-xl p-3 border border-indigo-100 text-center">
+              <p className="text-[10px] font-semibold uppercase text-indigo-500 mb-1">Windows</p>
+              <p className="text-xl font-bold text-indigo-700">{wf.num_windows}</p>
+            </div>
+          </div>
+          {robustness?.wfe != null && (
+            <div className={`rounded-xl p-3 mb-3 border text-center ${robustness.wfe >= 0.5 ? 'bg-green-50 border-green-200' : robustness.wfe >= 0.3 ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'}`}>
+              <p className="text-[10px] font-semibold uppercase text-[var(--tv-muted)] mb-1">Walk-Forward Efficiency (WFE)</p>
+              <p className={`text-2xl font-black ${robustness.wfe >= 0.5 ? 'text-green-700' : robustness.wfe >= 0.3 ? 'text-yellow-700' : 'text-red-600'}`}>
+                {robustness.wfe.toFixed(2)}
+              </p>
+              <p className="text-[10px] text-[var(--tv-muted)] mt-1">
+                {robustness.wfe >= 0.7 ? 'Excellent — OOS closely tracks IS performance' :
+                 robustness.wfe >= 0.5 ? 'Good — edge generalises reasonably well' :
+                 robustness.wfe >= 0.3 ? 'Marginal — OOS significantly below IS, possible overfit' :
+                                         'Poor — strategy likely overfit to in-sample data'}
+              </p>
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="border-b border-gray-100">
+                {['Window', 'Train Period', 'OOS Period', 'IS Sharpe', 'OOS Sharpe', 'OOS Return', 'Trades'].map(h => (
+                  <th key={h} className="py-1.5 text-left pr-3 text-[var(--tv-muted)] font-medium">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {wf.windows.map(w => (
+                  <tr key={w.window_num} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="py-1.5 pr-3 font-semibold">#{w.window_num}</td>
+                    <td className="py-1.5 pr-3 text-[var(--tv-muted)]">{w.train_period}</td>
+                    <td className="py-1.5 pr-3 text-[var(--tv-muted)]">{w.test_period}</td>
+                    <td className="py-1.5 pr-3">{fmt(w.train_sharpe)}</td>
+                    <td className={`py-1.5 pr-3 font-semibold ${w.sharpe >= 0.5 ? 'text-green-600' : w.sharpe >= 0 ? 'text-[var(--tv-muted)]' : 'text-red-500'}`}>{fmt(w.sharpe)}</td>
+                    <td className={`py-1.5 pr-3 font-semibold ${w.return_pct >= 0 ? 'text-green-600' : 'text-red-500'}`}>{sign(w.return_pct)}%</td>
+                    <td className="py-1.5 pr-3 text-[var(--tv-muted)]">{w.num_trades}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Baseline stats strip */}
       {baseEq > 0 && (

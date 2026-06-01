@@ -51,6 +51,7 @@ from engine.validation import run_holdout, run_walk_forward
 from engine.stress import (
     SCENARIO_PRESETS, StressScenario, run_stress_backtest,
     apply_stress, run_single_backtest, aggregate_stress_results, run_trade_mc,
+    compute_wfe, compute_robustness_score,
 )
 from frontend.report import generate_report
 from strategies import STRATEGY_REGISTRY
@@ -1020,6 +1021,10 @@ class StressRequest(BaseModel):
     # Trade-level MC
     trade_mc_runs:       int            = Field(0,    description="0=disabled; 200+ for trade-level MC (reshuffle+skip)")
     trade_skip_pct:      float          = Field(0.10, description="Fraction of trades to randomly skip per run (0.0–0.5)")
+    # Walk-forward validation (wires into Robustness Score overfit-resistance axis)
+    run_validation:      bool           = Field(False, description="Run walk-forward to compute Walk-Forward Efficiency (WFE) for the Robustness Score")
+    wf_window:           int            = Field(252,   description="Walk-forward train window in candles (default 252 = ~1yr daily)")
+    wf_step:             int            = Field(63,    description="Walk-forward OOS step in candles (default 63 = ~1qtr daily)")
 
 
 @app.post(f"{API_PREFIX}/stress/run", tags=["Stress"])
@@ -1108,6 +1113,28 @@ def run_stress(req: StressRequest, db: Session = Depends(get_db)):
         logger.exception("Stress backtest failed")
         raise HTTPException(500, f"Stress backtest error: {exc}")
 
+    # ── Walk-forward validation (optional — upgrades Robustness Score) ───────
+    wf_result: Optional[dict] = None
+    if req.run_validation:
+        try:
+            wf_result = run_walk_forward(
+                df              = df,
+                strategy_name   = strategy_name,
+                strategy_params = strategy_params,
+                sim_kwargs      = {**sim_kwargs, "capital": req.capital},
+                capital         = req.capital,
+                window          = req.wf_window,
+                step            = req.wf_step,
+            )
+            wfe = compute_wfe(wf_result)
+            if wfe is not None:
+                result["robustness"] = compute_robustness_score(
+                    result.get("baseline", {}), result.get("monte_carlo"), req.capital, wfe=wfe
+                )
+                result["robustness"]["walk_forward_windows"] = len(wf_result.get("windows", []))
+        except Exception as exc:
+            logger.warning("Walk-forward for stress failed (non-fatal): %s", exc)
+
     # ── Trade-level MC (optional, runs on baseline trades) ───────────────────
     trade_mc_result: Optional[dict] = None
     if req.trade_mc_runs > 0:
@@ -1130,7 +1157,8 @@ def run_stress(req: StressRequest, db: Session = Depends(get_db)):
         "symbol":      req.symbol,
         "strategy":    req.strategy.upper(),
         **result,
-        **({"trade_mc": trade_mc_result} if trade_mc_result else {}),
+        **({"trade_mc":      trade_mc_result} if trade_mc_result else {}),
+        **({"walk_forward":  wf_result}        if wf_result       else {}),
     })
 
 
@@ -1240,6 +1268,21 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
 
         n_runs = max(1, req_snap.monte_carlo_runs)
 
+        # ── Walk-forward (optional, before streaming MC runs) ─────────────────
+        wf_result_sse: Optional[dict] = None
+        wfe_sse: Optional[float] = None
+        if req_snap.run_validation:
+            try:
+                wf_result_sse = await asyncio.to_thread(
+                    run_walk_forward,
+                    df_snap, req_snap.strategy.upper(), strategy_params_,
+                    {**sim_kwargs_, "capital": req_snap.capital},
+                    req_snap.capital, req_snap.wf_window, req_snap.wf_step,
+                )
+                wfe_sse = compute_wfe(wf_result_sse)
+            except Exception as exc:
+                logger.warning("Walk-forward for stress (SSE) failed: %s", exc)
+
         # ── Baseline ─────────────────────────────────────────────────────────
         try:
             baseline = await asyncio.to_thread(
@@ -1252,7 +1295,8 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
 
         safe_baseline = {k: v for k, v in baseline.items()
                          if k not in ("equity_curve", "drawdowns", "timestamps", "trades")}
-        yield _ev({"type": "baseline", "metrics": safe_baseline, "total": n_runs})
+        yield _ev({"type": "baseline", "metrics": safe_baseline, "total": n_runs,
+                   **({"wfe": wfe_sse} if wfe_sse is not None else {})})
 
         # ── Effective scenario (with extra outliers) ──────────────────────────
         eff_scenario = deepcopy(scenario_snap)
@@ -1338,6 +1382,13 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
                     req_snap.seed,
                 )
 
+        # Update robustness score with WFE if walk-forward was run
+        if wfe_sse is not None and "robustness" in agg:
+            agg["robustness"] = compute_robustness_score(
+                agg.get("baseline", {}), agg.get("monte_carlo"), req_snap.capital, wfe=wfe_sse
+            )
+            agg["robustness"]["walk_forward_windows"] = len(wf_result_sse.get("windows", [])) if wf_result_sse else 0
+
         backtest_id = str(uuid.uuid4())[:8]
         yield _ev({
             "type":   "complete",
@@ -1346,7 +1397,8 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
                 "symbol":      req_snap.symbol,
                 "strategy":    req_snap.strategy.upper(),
                 **agg,
-                **({"trade_mc": trade_mc_result_sse} if trade_mc_result_sse else {}),
+                **({"trade_mc":     trade_mc_result_sse} if trade_mc_result_sse else {}),
+                **({"walk_forward": wf_result_sse}       if wf_result_sse       else {}),
             },
         })
 

@@ -129,6 +129,9 @@ export async function runStressTest(form: StressFormState): Promise<StressRespon
     monte_carlo_runs: form.mcRuns,
     trade_mc_runs:    form.tradeMcRuns ?? 0,
     trade_skip_pct:   form.tradeSkipPct ?? 0.10,
+    run_validation:   form.runValidation ?? false,
+    wf_window:        form.wfWindow ?? 252,
+    wf_step:          form.wfStep ?? 63,
   };
   if (form.shockDepthPct     != null) payload.shock_depth_pct     = form.shockDepthPct;
   if (form.shockDurationDays != null) payload.shock_duration_days = form.shockDurationDays;
@@ -206,6 +209,9 @@ export function streamStressTest(
     monte_carlo_runs: form.mcRuns,
     trade_mc_runs:    form.tradeMcRuns ?? 0,
     trade_skip_pct:   form.tradeSkipPct ?? 0.10,
+    run_validation:   form.runValidation ?? false,
+    wf_window:        form.wfWindow ?? 252,
+    wf_step:          form.wfStep ?? 63,
   };
   if (form.shockDepthPct     != null) payload.shock_depth_pct     = form.shockDepthPct;
   if (form.shockDurationDays != null) payload.shock_duration_days = form.shockDurationDays;

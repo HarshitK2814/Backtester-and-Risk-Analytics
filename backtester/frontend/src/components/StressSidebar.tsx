@@ -284,6 +284,9 @@ export const DEFAULT_STRESS_FORM: StressFormState = {
   mcRuns:          100,
   tradeMcRuns:     0,
   tradeSkipPct:    0.10,
+  runValidation:   false,
+  wfWindow:        252,
+  wfStep:          63,
 };
 
 // ── Shared input class (matches backtest sidebar style) ───────────────────────
@@ -709,6 +712,44 @@ export default function StressSidebar({ form, onChange, onRun, loading }: Props)
               <span className="text-[11px] font-bold text-purple-600 w-8 text-right">
                 {Math.round(form.tradeSkipPct * 100)}%
               </span>
+            </div>
+          )}
+        </section>
+
+        {/* ── Walk-Forward Validation ─────────────────────────────────── */}
+        <section>
+          <div className="flex items-center justify-between mb-1">
+            <label className={lbl}>
+              Walk-Forward Validation
+              <span className="ml-1 text-[10px] font-normal opacity-60">unlocks Overfit Resistance score</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => set({ runValidation: !form.runValidation })}
+              className={`relative w-10 h-5 rounded-full transition-colors ${form.runValidation ? 'bg-[var(--tv-accent)]' : 'bg-gray-200'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.runValidation ? 'translate-x-5' : 'translate-x-0'}`} />
+            </button>
+          </div>
+          {form.runValidation && (
+            <div className="space-y-1.5 mt-2">
+              <p className="text-[10px] text-[var(--tv-muted)] bg-indigo-50 rounded-lg px-2 py-1.5 border border-indigo-100">
+                Runs walk-forward optimization to compute Walk-Forward Efficiency (OOS Sharpe / IS Sharpe) — upgrades the Robustness Score from provisional to full 4-axis. Adds ~10–30 s depending on data length.
+              </p>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-[10px] text-[var(--tv-muted)] block mb-0.5">Train window (candles)</label>
+                  <input type="number" min={60} max={504} value={form.wfWindow}
+                    onChange={e => set({ wfWindow: Math.max(60, Math.min(504, +e.target.value)) })}
+                    className={inp} />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[10px] text-[var(--tv-muted)] block mb-0.5">OOS step (candles)</label>
+                  <input type="number" min={20} max={126} value={form.wfStep}
+                    onChange={e => set({ wfStep: Math.max(20, Math.min(126, +e.target.value)) })}
+                    className={inp} />
+                </div>
+              </div>
             </div>
           )}
         </section>

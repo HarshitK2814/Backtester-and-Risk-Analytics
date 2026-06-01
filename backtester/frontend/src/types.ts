@@ -261,10 +261,11 @@ export interface StressResponse {
   };
   baseline:     Partial<MetricsResults>;
   stressed:     StressRunMetrics & { equity_curve: number[] };
-  monte_carlo?: StressMonteCarloResult;
-  robustness?:  RobustnessScore;
-  trade_mc?:    TradeMCResult;
-  series:       StressSeries;
+  monte_carlo?:  StressMonteCarloResult;
+  robustness?:   RobustnessScore;
+  trade_mc?:     TradeMCResult;
+  walk_forward?: ValidationData;
+  series:        StressSeries;
 }
 
 export interface StressFormState {
@@ -319,6 +320,10 @@ export interface StressFormState {
   seed?:               number;
   tradeMcRuns:         number;    // 0 = disabled
   tradeSkipPct:        number;    // 0.0–0.5 (fraction to skip)
+  // Walk-forward validation
+  runValidation:       boolean;
+  wfWindow:            number;    // train window in candles
+  wfStep:              number;    // OOS step in candles
 }
 
 export interface FormState {

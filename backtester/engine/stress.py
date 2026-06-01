@@ -265,6 +265,33 @@ def compute_robustness_score(
     }
 
 
+def compute_wfe(wf_result: dict) -> Optional[float]:
+    """
+    Walk-Forward Efficiency = mean OOS Sharpe / mean IS Sharpe.
+
+    Accepts the dict returned by engine.validation.run_walk_forward().
+    Returns None if insufficient windows or IS Sharpe is zero.
+
+    WFE interpretation:
+      >= 0.7  excellent  — OOS closely tracks IS, low overfit risk
+      0.5–0.7 good
+      0.3–0.5 marginal
+      < 0.3   bad        — edge may not generalise
+    """
+    windows = wf_result.get("windows", [])
+    if not windows:
+        return None
+    is_sharpes  = [w["train_sharpe"] for w in windows if w.get("train_sharpe") is not None]
+    oos_sharpes = [w["sharpe"]       for w in windows if w.get("sharpe")       is not None]
+    if not is_sharpes or not oos_sharpes:
+        return None
+    mean_is  = float(np.mean(is_sharpes))
+    mean_oos = float(np.mean(oos_sharpes))
+    if mean_is <= 1e-6:
+        return None
+    return round(mean_oos / mean_is, 4)
+
+
 def _trs_interpretation(score: float, provisional: bool) -> str:
     suffix = " (provisional — run walk-forward for the full score)" if provisional else ""
     if score >= 90: return f"Excellent robustness. Strategy held up across scenarios and MC paths.{suffix}"
