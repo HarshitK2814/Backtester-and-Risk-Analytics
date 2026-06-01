@@ -282,6 +282,8 @@ export const DEFAULT_STRESS_FORM: StressFormState = {
   severity:        'moderate',
   outlierCount:    0,
   mcRuns:          100,
+  tradeMcRuns:     0,
+  tradeSkipPct:    0.10,
 };
 
 // ── Shared input class (matches backtest sidebar style) ───────────────────────
@@ -678,6 +680,36 @@ export default function StressSidebar({ form, onChange, onRun, loading }: Props)
             <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-2 py-1.5 border border-amber-200">
               {form.mcRuns} runs may take {Math.round(form.mcRuns * 0.15)}–{Math.round(form.mcRuns * 0.4)} s.
             </p>
+          )}
+        </section>
+
+        {/* ── Trade-level MC ───────────────────────────────────────────── */}
+        <section>
+          <label className={lbl}>Trade-level MC <span className="text-[10px] font-normal opacity-60">(reshuffle + skip)</span></label>
+          <p className="text-[10px] text-[var(--tv-muted)] mb-2">
+            Reshuffles your actual trades and skips a random fraction per run. 0 = disabled.
+          </p>
+          <div className="flex gap-1 mb-2 bg-gray-100 rounded-full p-1">
+            {[0, 100, 200, 500].map(n => (
+              <button key={n} onClick={() => set({ tradeMcRuns: n })}
+                className={`flex-1 py-1 text-xs font-semibold rounded-full transition
+                  ${form.tradeMcRuns === n
+                    ? 'bg-white text-purple-600 shadow-sm'
+                    : 'text-gray-500 hover:text-gray-700'}`}
+              >{n === 0 ? 'Off' : n}</button>
+            ))}
+          </div>
+          {form.tradeMcRuns > 0 && (
+            <div className="flex items-center gap-2 mt-1">
+              <label className="text-[10px] text-[var(--tv-muted)] whitespace-nowrap">Skip %</label>
+              <input type="range" min={0} max={50} step={5}
+                value={Math.round(form.tradeSkipPct * 100)}
+                onChange={e => set({ tradeSkipPct: +e.target.value / 100 })}
+                className="flex-1" />
+              <span className="text-[11px] font-bold text-purple-600 w-8 text-right">
+                {Math.round(form.tradeSkipPct * 100)}%
+              </span>
+            </div>
           )}
         </section>
 

@@ -6,7 +6,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   Brush, ReferenceLine,
 } from 'recharts';
-import { StressResponse, RobustnessScore } from '../types';
+import { StressResponse, RobustnessScore, TradeMCResult } from '../types';
 import MCPathsCanvas, { MCRun } from './MCPathsCanvas';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -451,12 +451,109 @@ function MCPathsCard({
   );
 }
 
+// ─── Trade-level MC card ──────────────────────────────────────────────────────
+
+function TradeMCCard({ tmc }: { tmc: TradeMCResult }) {
+  if (!tmc.runs) {
+    return (
+      <Card>
+        <SectionTitle>Trade-level Monte Carlo</SectionTitle>
+        <p className="text-xs text-[var(--tv-muted)]">{tmc.note ?? 'Not enough trades.'}</p>
+      </Card>
+    );
+  }
+
+  const skipPct  = Math.round((tmc.trade_skip_pct ?? 0) * 100);
+  const returnHistData = useMemo(() => makeBuckets(tmc.per_run.map(r => r.return_pct)), [tmc]);
+
+  return (
+    <Card>
+      <SectionTitle
+        sub={`${tmc.runs} runs · ${skipPct}% of ${tmc.original_trades} trades randomly skipped + reshuffled per run`}
+      >
+        Trade-level Monte Carlo
+      </SectionTitle>
+
+      {/* Interpretation chip */}
+      <div className="mb-3 text-xs text-blue-700 bg-blue-50 rounded-xl px-3 py-2 border border-blue-100">
+        Shuffles and skips your actual trade list to ask: <strong>"What if the same trades happened in a different order, or some didn't fire?"</strong> A strategy that looks great on paper but collapses when trades are reordered likely depends on lucky sequencing.
+      </div>
+
+      {/* Percentile table */}
+      <div className="overflow-x-auto mb-4">
+        <table className="w-full text-xs text-[var(--tv-text)]">
+          <thead>
+            <tr className="border-b border-gray-100">
+              {['Metric', 'P5 — Tail', 'P50 — Median', 'P95 — Best', 'Worst'].map(h => (
+                <th key={h} className={`py-2 text-[var(--tv-muted)] font-medium ${h === 'Metric' ? 'text-left pr-4' : 'text-right px-3'}`}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {([
+              { label: 'Return %',     s: tmc.return_pct,       unit: '%' },
+              { label: 'Max Drawdown', s: tmc.max_drawdown_pct, unit: '%' },
+              { label: 'Sharpe',       s: tmc.sharpe,           unit: '' },
+              { label: 'Win Rate',     s: tmc.win_rate,         unit: '%' },
+            ] as { label: string; s: { p5: number; p50: number; p95: number; worst: number }; unit: string }[]).map(({ label, s, unit }) => (
+              <tr key={label} className="border-b border-gray-50 hover:bg-gray-50">
+                <td className="py-2 pr-4 font-semibold">{label}</td>
+                <td className="text-right px-3 text-red-500 font-medium">{fmt(s.p5)}{unit}</td>
+                <td className="text-right px-3 font-bold">{fmt(s.p50)}{unit}</td>
+                <td className="text-right px-3 text-green-600 font-medium">{fmt(s.p95)}{unit}</td>
+                <td className="text-right px-3 text-red-700 font-bold">{fmt(s.worst)}{unit}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* CVaR + ruin */}
+      {(tmc.cvar_5 != null || tmc.prob_ruin != null) && (
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          {tmc.cvar_5 != null && (
+            <div className="bg-red-50 rounded-xl p-3 border border-red-100">
+              <p className="text-[10px] font-semibold uppercase text-red-500 mb-1">CVaR (5%)</p>
+              <p className="text-base font-bold text-red-600">{sign(tmc.cvar_5)}%</p>
+            </div>
+          )}
+          {tmc.prob_ruin != null && (
+            <div className={`rounded-xl p-3 border ${tmc.prob_ruin > 0.1 ? 'bg-red-50 border-red-100' : 'bg-gray-50 border-gray-100'}`}>
+              <p className="text-[10px] font-semibold uppercase text-[var(--tv-muted)] mb-1">Probability of Ruin</p>
+              <p className={`text-base font-bold ${tmc.prob_ruin > 0.1 ? 'text-red-600' : tmc.prob_ruin > 0.02 ? 'text-orange-500' : 'text-green-600'}`}>
+                {(tmc.prob_ruin * 100).toFixed(1)}%
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Return distribution histogram */}
+      {returnHistData.length > 0 && (
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-[var(--tv-muted)] mb-2">Return Distribution</p>
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={returnHistData} margin={{ top: 2, right: 4, bottom: 0, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis dataKey="range" tick={{ fontSize: 10, fill: '#9CA3AF' }} />
+              <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} />
+              <Tooltip contentStyle={TT_STYLE} formatter={(v: number) => [v, 'Runs']} />
+              <ReferenceLine x="0%" stroke="#9CA3AF" strokeDasharray="4 4" />
+              <Bar dataKey="count" name="Runs" radius={[3,3,0,0]} fill="#8B5CF6" opacity={0.85} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface Props { result: StressResponse; currency: string; locale: string; }
 
 export default function StressResults({ result, currency, locale }: Props) {
-  const { baseline, stressed, monte_carlo: mc, series, scenario, robustness } = result;
+  const { baseline, stressed, monte_carlo: mc, series, scenario, robustness, trade_mc } = result;
 
   const baseRet     = (baseline.total_return_pct   ?? 0) as number;
   const baseSharpe  = (baseline.sharpe_ratio        ?? 0) as number;
@@ -732,6 +829,9 @@ export default function StressResults({ result, currency, locale }: Props) {
               )}
             </div>
           )}
+
+          {/* Trade-level MC card */}
+          {trade_mc && trade_mc.runs > 0 && <TradeMCCard tmc={trade_mc} />}
 
           {/* P5/P50/P95 band chart */}
           {series.equity_fan && (

@@ -276,6 +276,114 @@ def _trs_interpretation(score: float, provisional: bool) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Trade-level Monte Carlo
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_trade_mc(
+    trades:          list[dict],
+    capital:         float,
+    n_runs:          int   = 200,
+    trade_skip_pct:  float = 0.10,
+    seed:            Optional[int] = None,
+) -> dict:
+    """
+    Trade-level Monte Carlo: randomly skip + reshuffle the realized trade list.
+
+    For each run:
+      1. Drop trade_skip_pct fraction of trades at random
+      2. Shuffle remaining trades (randomise order/timing)
+      3. Rebuild a trade-to-trade equity curve from capital
+      4. Compute return, max_drawdown, win_rate, sharpe from that curve
+
+    Returns a dict in the same shape as mc_result (data-path MC) so the
+    frontend can display both side-by-side using the same components.
+    Requires at least 3 trades to be meaningful; returns {"runs": 0} otherwise.
+    """
+    if len(trades) < 3:
+        return {"runs": 0, "note": "Need ≥3 trades for trade-level MC."}
+
+    rng     = np.random.default_rng(seed)
+    n_runs  = max(1, n_runs)
+    pnls    = np.array([float(t.get("pnl", 0.0)) for t in trades])
+    is_win  = pnls > 0
+
+    per_run: list[dict] = []
+
+    for _ in range(n_runs):
+        # 1. Skip a random fraction of trades
+        n_keep = max(1, int(round(len(pnls) * (1.0 - trade_skip_pct))))
+        keep   = rng.choice(len(pnls), size=n_keep, replace=False)
+        run_pnls = pnls[keep]
+        run_wins = is_win[keep]
+
+        # 2. Shuffle order (timing variation)
+        rng.shuffle(run_pnls)
+
+        # 3. Rebuild equity curve
+        eq = np.empty(n_keep + 1)
+        eq[0] = capital
+        for j, p in enumerate(run_pnls):
+            eq[j + 1] = max(0.0, eq[j] + p)
+
+        # 4. Metrics
+        final_eq    = float(eq[-1])
+        ret_pct     = (final_eq - capital) / capital * 100.0 if capital > 0 else 0.0
+        win_rt      = float(np.mean(run_wins)) * 100.0
+        # Max drawdown on trade equity curve
+        peak        = np.maximum.accumulate(eq)
+        dd          = (eq - peak) / np.where(peak > 0, peak, 1.0)
+        max_dd      = float(dd.min()) * 100.0
+        # Sharpe: per-trade returns (pnl / starting capital as proxy)
+        trade_rets  = run_pnls / capital if capital > 0 else run_pnls
+        mean_tr     = float(np.mean(trade_rets))
+        std_tr      = float(np.std(trade_rets))
+        # Annualise assuming 252 trading days, scaling by average trades/year
+        trades_per_yr = 252.0
+        sharpe = (mean_tr / std_tr * np.sqrt(trades_per_yr)) if std_tr > 1e-10 else 0.0
+
+        per_run.append({
+            "return_pct":  round(ret_pct,  4),
+            "max_dd_pct":  round(max_dd,   4),
+            "win_rate":    round(win_rt,    4),
+            "sharpe":      round(sharpe,    4),
+            "final_equity": round(final_eq, 2),
+            "num_trades":  int(n_keep),
+        })
+
+    returns  = np.array([r["return_pct"] for r in per_run])
+    dds      = np.array([r["max_dd_pct"] for r in per_run])
+    sharpes  = np.array([r["sharpe"]     for r in per_run])
+    wrs      = np.array([r["win_rate"]   for r in per_run])
+    finals   = np.array([r["final_equity"] for r in per_run])
+
+    def _p(arr: np.ndarray, ib: bool = True) -> dict:
+        d = {"p5":   round(float(np.percentile(arr,  5)), 4),
+             "p50":  round(float(np.percentile(arr, 50)), 4),
+             "p95":  round(float(np.percentile(arr, 95)), 4),
+             "worst": round(float(arr.min()), 4)}
+        if ib: d["best"] = round(float(arr.max()), 4)
+        return d
+
+    ret_cutoff   = float(np.percentile(returns, 5))
+    tail_returns = returns[returns <= ret_cutoff]
+    cvar_5 = round(float(np.mean(tail_returns)) if len(tail_returns) > 0 else ret_cutoff, 4)
+    prob_ruin = round(float(np.mean(finals < capital * 0.5)), 4)
+
+    return {
+        "runs":             n_runs,
+        "trade_skip_pct":   trade_skip_pct,
+        "original_trades":  len(trades),
+        "return_pct":       _p(returns),
+        "max_drawdown_pct": _p(dds,     ib=False),
+        "sharpe":           _p(sharpes, ib=False),
+        "win_rate":         _p(wrs,     ib=False),
+        "cvar_5":           cvar_5,
+        "prob_ruin":        prob_ruin,
+        "per_run":          per_run,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Low-level OHLCV perturbation helpers
 # ─────────────────────────────────────────────────────────────────────────────
 

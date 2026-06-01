@@ -235,6 +235,20 @@ export interface StressSeries {
   };
 }
 
+export interface TradeMCResult {
+  runs:             number;
+  trade_skip_pct:   number;
+  original_trades:  number;
+  return_pct:       MonteCarloStats;
+  max_drawdown_pct: MonteCarloStats;
+  sharpe:           MonteCarloStats;
+  win_rate:         MonteCarloStats;
+  cvar_5?:          number;
+  prob_ruin?:       number;
+  per_run:          { return_pct: number; max_dd_pct: number; win_rate: number; sharpe: number; final_equity: number; num_trades: number }[];
+  note?:            string;
+}
+
 export interface StressResponse {
   backtest_id:  string;
   symbol:       string;
@@ -249,6 +263,7 @@ export interface StressResponse {
   stressed:     StressRunMetrics & { equity_curve: number[] };
   monte_carlo?: StressMonteCarloResult;
   robustness?:  RobustnessScore;
+  trade_mc?:    TradeMCResult;
   series:       StressSeries;
 }
 
@@ -302,6 +317,8 @@ export interface StressFormState {
   outlierCount:        number;
   mcRuns:              number;
   seed?:               number;
+  tradeMcRuns:         number;    // 0 = disabled
+  tradeSkipPct:        number;    // 0.0–0.5 (fraction to skip)
 }
 
 export interface FormState {

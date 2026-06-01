@@ -50,7 +50,7 @@ from engine.regimes import classify_regimes, regime_breakdown
 from engine.validation import run_holdout, run_walk_forward
 from engine.stress import (
     SCENARIO_PRESETS, StressScenario, run_stress_backtest,
-    apply_stress, run_single_backtest, aggregate_stress_results,
+    apply_stress, run_single_backtest, aggregate_stress_results, run_trade_mc,
 )
 from frontend.report import generate_report
 from strategies import STRATEGY_REGISTRY
@@ -1017,6 +1017,9 @@ class StressRequest(BaseModel):
     outlier_count:       int            = Field(0,    description="Extra outliers layered on scenario")
     monte_carlo_runs:    int            = Field(1,    description="1=deterministic; 100/500/1000 for MC")
     seed:                Optional[int]  = Field(None)
+    # Trade-level MC
+    trade_mc_runs:       int            = Field(0,    description="0=disabled; 200+ for trade-level MC (reshuffle+skip)")
+    trade_skip_pct:      float          = Field(0.10, description="Fraction of trades to randomly skip per run (0.0–0.5)")
 
 
 @app.post(f"{API_PREFIX}/stress/run", tags=["Stress"])
@@ -1105,12 +1108,29 @@ def run_stress(req: StressRequest, db: Session = Depends(get_db)):
         logger.exception("Stress backtest failed")
         raise HTTPException(500, f"Stress backtest error: {exc}")
 
+    # ── Trade-level MC (optional, runs on baseline trades) ───────────────────
+    trade_mc_result: Optional[dict] = None
+    if req.trade_mc_runs > 0:
+        baseline_trades = result.get("baseline", {}).get("trades", [])
+        # baseline dict has trades stripped; re-run baseline to get them
+        baseline_full = run_single_backtest(df, strategy_cls, strategy_params, sim_kwargs, req.capital)
+        baseline_trades = baseline_full.get("trades", [])
+        if baseline_trades:
+            trade_mc_result = run_trade_mc(
+                trades         = baseline_trades,
+                capital        = req.capital,
+                n_runs         = min(req.trade_mc_runs, 2000),
+                trade_skip_pct = max(0.0, min(0.5, req.trade_skip_pct)),
+                seed           = req.seed,
+            )
+
     backtest_id = str(uuid.uuid4())[:8]
     return _sanitize({
         "backtest_id": backtest_id,
         "symbol":      req.symbol,
         "strategy":    req.strategy.upper(),
         **result,
+        **({"trade_mc": trade_mc_result} if trade_mc_result else {}),
     })
 
 
@@ -1304,6 +1324,20 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
             yield _ev({"type": "error", "message": f"Aggregation failed: {exc}"})
             return
 
+        # ── Trade-level MC (optional) ─────────────────────────────────────────
+        trade_mc_result_sse: Optional[dict] = None
+        if req_snap.trade_mc_runs > 0:
+            baseline_trades_sse = baseline.get("trades", [])
+            if baseline_trades_sse:
+                trade_mc_result_sse = await asyncio.to_thread(
+                    run_trade_mc,
+                    baseline_trades_sse,
+                    req_snap.capital,
+                    min(req_snap.trade_mc_runs, 2000),
+                    max(0.0, min(0.5, req_snap.trade_skip_pct)),
+                    req_snap.seed,
+                )
+
         backtest_id = str(uuid.uuid4())[:8]
         yield _ev({
             "type":   "complete",
@@ -1312,6 +1346,7 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
                 "symbol":      req_snap.symbol,
                 "strategy":    req_snap.strategy.upper(),
                 **agg,
+                **({"trade_mc": trade_mc_result_sse} if trade_mc_result_sse else {}),
             },
         })
 
