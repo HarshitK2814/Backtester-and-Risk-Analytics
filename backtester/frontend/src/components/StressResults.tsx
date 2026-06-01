@@ -6,7 +6,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   Brush, ReferenceLine,
 } from 'recharts';
-import { StressResponse } from '../types';
+import { StressResponse, RobustnessScore } from '../types';
 import MCPathsCanvas, { MCRun } from './MCPathsCanvas';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -176,6 +176,139 @@ function MCInterpretation({ runs, p5, p50, p95, worst, best }: {
   );
 }
 
+// ─── Robustness Gauge ────────────────────────────────────────────────────────
+
+const GRADE_CFG: Record<string, { color: string; bg: string; ring: string }> = {
+  'A+': { color: 'text-emerald-700', bg: 'bg-emerald-50',  ring: '#10b981' },
+  'A':  { color: 'text-green-700',   bg: 'bg-green-50',    ring: '#22c55e' },
+  'B':  { color: 'text-teal-700',    bg: 'bg-teal-50',     ring: '#14b8a6' },
+  'C':  { color: 'text-yellow-700',  bg: 'bg-yellow-50',   ring: '#eab308' },
+  'D':  { color: 'text-orange-700',  bg: 'bg-orange-50',   ring: '#f97316' },
+  'F':  { color: 'text-red-700',     bg: 'bg-red-50',      ring: '#ef4444' },
+};
+
+function RobustnessGauge({ rob }: { rob: RobustnessScore }) {
+  const [open, setOpen] = useState(false);
+
+  if (rob.score === null) {
+    return (
+      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 text-center text-xs text-[var(--tv-muted)]">
+        {rob.reason ?? 'Run ≥2 MC simulations to compute the Robustness Score.'}
+      </div>
+    );
+  }
+
+  const grade = rob.grade ?? 'F';
+  const cfg   = GRADE_CFG[grade] ?? GRADE_CFG['F'];
+  const score = rob.score;
+
+  // SVG arc gauge — score 0–100 maps to 0–180° sweep (semi-circle)
+  const R     = 56;
+  const cx    = 72;
+  const cy    = 72;
+  const start = { x: cx - R, y: cy };
+  const pct   = Math.min(1, score / 100);
+  const angle = Math.PI * pct;
+  const ex    = cx + R * Math.cos(Math.PI - angle);
+  const ey    = cy - R * Math.sin(angle);
+  const large = pct > 0.5 ? 1 : 0;
+
+  const axes = rob.axes;
+
+  return (
+    <div className={`rounded-2xl border p-4 ${cfg.bg} border-opacity-40`}
+         style={{ borderColor: cfg.ring + '66' }}>
+
+      {/* Header */}
+      <div className="flex items-start gap-4 flex-wrap">
+
+        {/* SVG semi-circle dial */}
+        <div className="flex-shrink-0">
+          <svg width="144" height="82" viewBox="0 0 144 82">
+            {/* Track */}
+            <path d={`M ${start.x} ${cy} A ${R} ${R} 0 0 1 ${cx + R} ${cy}`}
+              fill="none" stroke="#e5e7eb" strokeWidth="10" strokeLinecap="round" />
+            {/* Filled arc */}
+            {pct > 0 && (
+              <path d={`M ${start.x} ${cy} A ${R} ${R} 0 ${large} 1 ${ex} ${ey}`}
+                fill="none" stroke={cfg.ring} strokeWidth="10" strokeLinecap="round" />
+            )}
+            {/* Score text */}
+            <text x={cx} y={cy - 4} textAnchor="middle" fontSize="22" fontWeight="bold"
+              fill={cfg.ring}>{score.toFixed(0)}</text>
+            <text x={cx} y={cy + 13} textAnchor="middle" fontSize="11" fill="#6b7280">/ 100</text>
+          </svg>
+        </div>
+
+        {/* Grade + title */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`text-3xl font-black ${cfg.color}`}>{grade}</span>
+            <span className="text-sm font-bold text-[var(--tv-text)]">Robustness Score</span>
+            {rob.provisional && (
+              <span className="px-2 py-0.5 text-[10px] font-semibold bg-yellow-100 text-yellow-700 rounded-full border border-yellow-200">
+                PROVISIONAL
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-[var(--tv-muted)] leading-relaxed">{rob.interpretation}</p>
+          {rob.provisional && (
+            <p className="text-[10px] text-yellow-600 mt-1">
+              Run Walk-Forward validation to unlock the Overfit Resistance axis (25% of score).
+            </p>
+          )}
+        </div>
+
+        {/* Axis bars */}
+        <div className="flex flex-col gap-1.5 min-w-[160px]">
+          {[
+            { key: 'survival',           label: 'Scenario Survival',   w: '30%' },
+            { key: 'stability',          label: 'MC Stability',         w: '25%' },
+            { key: 'tail_safety',        label: 'Tail Safety',          w: '20%' },
+            { key: 'overfit_resistance', label: 'Overfit Resistance',   w: '25%' },
+          ].map(({ key, label, w }) => {
+            const val = axes[key as keyof typeof axes];
+            if (val === undefined) return (
+              <div key={key} className="flex items-center gap-2">
+                <span className="text-[10px] text-[var(--tv-muted)] w-28 flex-shrink-0">{label} <span className="opacity-50">({w})</span></span>
+                <span className="text-[10px] text-yellow-600">—</span>
+              </div>
+            );
+            const barColor = val >= 70 ? cfg.ring : val >= 50 ? '#f97316' : '#ef4444';
+            return (
+              <div key={key} className="flex items-center gap-2">
+                <span className="text-[10px] text-[var(--tv-muted)] w-28 flex-shrink-0 leading-tight">
+                  {label} <span className="opacity-50">({w})</span>
+                </span>
+                <div className="flex-1 bg-white rounded-full h-1.5 border border-gray-100">
+                  <div className="h-full rounded-full transition-all"
+                       style={{ width: `${val}%`, background: barColor }} />
+                </div>
+                <span className="text-[10px] font-bold w-6 text-right" style={{ color: barColor }}>{val.toFixed(0)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Expandable detail */}
+      <button onClick={() => setOpen(o => !o)}
+        className="mt-3 text-xs font-medium text-[var(--tv-muted)] hover:text-[var(--tv-text)] flex items-center gap-1 transition-colors">
+        {open ? '▲ Hide details' : '▼ How is this score calculated?'}
+      </button>
+      {open && (
+        <div className="mt-2 text-[11px] text-[var(--tv-muted)] space-y-1 border-t border-gray-200 pt-2">
+          <p><strong>Scenario Survival (30%):</strong> % of MC runs with return &gt; −20%, penalised by median return. A wide spread of outcomes drags this down.</p>
+          <p><strong>MC Stability (25%):</strong> Whether the P5 return is positive + how tight the outcome spread is (P95–P5). Tight clusters score higher.</p>
+          <p><strong>Tail Safety (20%):</strong> CVaR(5%) mapped 0–100 + (1 − Probability of Ruin). Ruin = final equity &lt; 50% of capital.</p>
+          <p><strong>Overfit Resistance (25%):</strong> Walk-Forward Efficiency = OOS Sharpe ÷ IS Sharpe. Only available when Walk-Forward is run. Without it, the other axes are re-weighted to sum to 100%.</p>
+          <p className="mt-1">Grade: A+ ≥ 90 · A 80–89 · B 70–79 · C 60–69 · D 50–59 · F &lt; 50</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Static MC Paths view (post-completion) ───────────────────────────────────
 
 function MCPathsCard({
@@ -323,7 +456,7 @@ function MCPathsCard({
 interface Props { result: StressResponse; currency: string; locale: string; }
 
 export default function StressResults({ result, currency, locale }: Props) {
-  const { baseline, stressed, monte_carlo: mc, series, scenario } = result;
+  const { baseline, stressed, monte_carlo: mc, series, scenario, robustness } = result;
 
   const baseRet     = (baseline.total_return_pct   ?? 0) as number;
   const baseSharpe  = (baseline.sharpe_ratio        ?? 0) as number;
@@ -386,6 +519,9 @@ export default function StressResults({ result, currency, locale }: Props) {
 
       {/* Verdict */}
       <VerdictBanner baseRet={baseRet} stressRet={stressed.return_pct} baseDD={baseDD} stressDD={stressed.max_dd_pct} />
+
+      {/* Robustness Score Gauge — shown when MC data is available */}
+      {robustness && <RobustnessGauge rob={robustness} />}
 
       {/* Baseline stats strip */}
       {baseEq > 0 && (
@@ -528,6 +664,32 @@ export default function StressResults({ result, currency, locale }: Props) {
                 </tbody>
               </table>
             </div>
+
+            {/* Tail risk summary row — CVaR + Probability of Ruin */}
+            {(mc.cvar_5 != null || mc.prob_ruin != null) && (
+              <div className="mt-4 pt-3 border-t border-gray-100 grid grid-cols-2 gap-3">
+                {mc.cvar_5 != null && (
+                  <div className="bg-red-50 rounded-xl p-3 border border-red-100">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-red-500 mb-1">CVaR / Expected Shortfall (5%)</p>
+                    <p className="text-lg font-bold text-red-600">{sign(mc.cvar_5)}%</p>
+                    <p className="text-[10px] text-[var(--tv-muted)] mt-1">
+                      Average return in the worst 5% of simulations. This is how bad it gets in the tail — beyond what P5 alone shows.
+                    </p>
+                  </div>
+                )}
+                {mc.prob_ruin != null && (
+                  <div className={`rounded-xl p-3 border ${mc.prob_ruin > 0.1 ? 'bg-red-50 border-red-100' : 'bg-gray-50 border-gray-100'}`}>
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--tv-muted)] mb-1">Probability of Ruin</p>
+                    <p className={`text-lg font-bold ${mc.prob_ruin > 0.1 ? 'text-red-600' : mc.prob_ruin > 0.02 ? 'text-orange-500' : 'text-green-600'}`}>
+                      {(mc.prob_ruin * 100).toFixed(1)}%
+                    </p>
+                    <p className="text-[10px] text-[var(--tv-muted)] mt-1">
+                      Fraction of runs where final equity fell below 50% of starting capital.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </Card>
 
           {/* Histograms side by side */}
