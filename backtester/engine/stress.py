@@ -125,6 +125,30 @@ SCENARIO_PRESETS: dict[str, StressScenario] = {
         shock_depth_pct=0.0, shock_duration_days=0, vol_multiplier=1.0,
         outlier_count=5, outlier_min_pct=20.0, outlier_max_pct=30.0, direction="down",
     ),
+    # ── Indian-specific scenarios ─────────────────────────────────────────────
+    "demonetization_2016": StressScenario(
+        name="demonetization_2016", display_name="India Demonetization 2016",
+        shock_depth_pct=15.0, shock_duration_days=30, vol_multiplier=2.0,
+        direction="down", pump_pct=8.0, pump_duration_days=20,
+        gap_min_pct=2.0, gap_max_pct=6.0, gap_count=4,
+    ),
+    "covid_nifty_mar2020": StressScenario(
+        name="covid_nifty_mar2020", display_name="COVID NIFTY Crash Mar 2020",
+        shock_depth_pct=38.0, shock_duration_days=40, vol_multiplier=3.5,
+        direction="down", pump_pct=70.0, pump_duration_days=90,
+        gap_min_pct=3.0, gap_max_pct=8.0, gap_count=5,
+    ),
+    "yes_bank_2020": StressScenario(
+        name="yes_bank_2020", display_name="Yes Bank Collapse 2020",
+        shock_depth_pct=85.0, shock_duration_days=120, vol_multiplier=3.0,
+        direction="down", gap_min_pct=5.0, gap_max_pct=15.0, gap_count=6,
+    ),
+    "expiry_gamma_squeeze": StressScenario(
+        name="expiry_gamma_squeeze", display_name="F&O Expiry Gamma Squeeze",
+        shock_depth_pct=0.0, shock_duration_days=0, vol_multiplier=4.0,
+        direction="both", outlier_count=4, outlier_min_pct=5.0, outlier_max_pct=12.0,
+        gap_min_pct=2.0, gap_max_pct=6.0, gap_count=4,
+    ),
 }
 
 
@@ -479,6 +503,55 @@ def apply_stress(
 
     elif sname == "outlier_injection":
         pass  # handled below
+
+    elif sname == "demonetization_2016":
+        # Sharp fall with circuit-breaker gaps, partial recovery (no persist — reforms stabilised)
+        _apply_drift(out, start, end, shock, "down")
+        if scenario.pump_pct > 0:
+            pump_dur = max(1, round(scenario.pump_duration_days * cpd))
+            _apply_drift(out, end, min(end + pump_dur, n), scenario.pump_pct * severity, "up")
+        _apply_vol_scale(out, start, end, vmult)
+        if scenario.gap_count > 0:
+            gc       = max(1, round(scenario.gap_count * severity))
+            g_idx    = sorted(rng.choice(max(1, end - start), size=min(gc, max(1, end - start)), replace=False).tolist())
+            g_idx    = [start + i for i in g_idx]
+            g_pcts   = rng.uniform(scenario.gap_min_pct, scenario.gap_max_pct, size=len(g_idx)).tolist()
+            _apply_gaps(out, g_idx, g_pcts, "down", rng)
+
+    elif sname == "covid_nifty_mar2020":
+        # Fast Indian crash (circuit breakers → gaps) then V-recovery, both persistent
+        _apply_drift(out, start, end, shock, "down", persist=True)
+        if scenario.gap_count > 0:
+            gc     = max(1, round(scenario.gap_count * severity))
+            g_idx  = sorted(rng.choice(max(1, end - start), size=min(gc, max(1, end - start)), replace=False).tolist())
+            g_idx  = [start + i for i in g_idx]
+            g_pcts = rng.uniform(scenario.gap_min_pct, scenario.gap_max_pct, size=len(g_idx)).tolist()
+            _apply_gaps(out, g_idx, g_pcts, "down", rng)
+        if scenario.pump_pct > 0:
+            pump_dur = max(1, round(scenario.pump_duration_days * cpd))
+            pump_end = min(end + pump_dur, n)
+            _apply_drift(out, end, pump_end, scenario.pump_pct * severity, "up", persist=True)
+        _apply_vol_scale(out, start, end, vmult)
+
+    elif sname == "yes_bank_2020":
+        # Slow collapse with circuit breaker gaps — persist (no recovery)
+        _apply_drift(out, start, end, min(shock, 99.0), "down", persist=True)
+        if scenario.gap_count > 0:
+            gc     = max(1, round(scenario.gap_count * severity))
+            g_idx  = sorted(rng.choice(max(1, end - start), size=min(gc, max(1, end - start)), replace=False).tolist())
+            g_idx  = [start + i for i in g_idx]
+            g_pcts = rng.uniform(scenario.gap_min_pct, scenario.gap_max_pct, size=len(g_idx)).tolist()
+            _apply_gaps(out, g_idx, g_pcts, "down", rng)
+        _apply_vol_scale(out, start, end, vmult)
+
+    elif sname == "expiry_gamma_squeeze":
+        # Intraday spikes at random points — no trend change, vol + outlier injection
+        _apply_vol_scale(out, 0, n, vmult)
+        if scenario.gap_count > 0:
+            gc     = max(1, round(scenario.gap_count * severity))
+            g_idx  = sorted(rng.choice(max(1, n - 1), size=min(gc, max(1, n - 1)), replace=False).tolist())
+            g_pcts = rng.uniform(scenario.gap_min_pct, scenario.gap_max_pct, size=len(g_idx)).tolist()
+            _apply_gaps(out, g_idx, g_pcts, "both", rng)
 
     # Outlier injection — standalone or layered on any scenario
     if scenario.outlier_count > 0:

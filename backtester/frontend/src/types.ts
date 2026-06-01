@@ -154,7 +154,9 @@ export type StressScenarioKey =
   | 'gfc_2008' | 'covid_crash' | 'flash_crash_2010' | 'luna_collapse'
   | 'liquidity_drought' | 'pump_dump' | 'whipsaw_chop' | 'slow_bleed'
   | 'vol_spike' | 'gap_risk' | 'range_bound' | 'trend_reversal'
-  | 'outlier_injection';
+  | 'outlier_injection'
+  // Indian-specific scenarios
+  | 'demonetization_2016' | 'covid_nifty_mar2020' | 'yes_bank_2020' | 'expiry_gamma_squeeze';
 
 export type StressSeverity = 'mild' | 'moderate' | 'severe' | 'custom';
 
