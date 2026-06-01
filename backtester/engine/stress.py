@@ -129,6 +129,129 @@ SCENARIO_PRESETS: dict[str, StressScenario] = {
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Robustness Score
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_robustness_score(
+    baseline:   dict,
+    mc_result:  Optional[dict],
+    capital:    float,
+    wfe:        Optional[float] = None,
+) -> dict:
+    """
+    TradeVed Robustness Score (TRS) — 0–100 → letter grade A+…F.
+
+    Axes and weights:
+      Scenario Survival   30%  — how many MC runs avoided catastrophic loss
+      MC Stability        25%  — P5 positivity + outcome dispersion
+      Tail Safety         20%  — CVaR(5%) + Probability of Ruin
+      Overfit Resistance  25%  — Walk-Forward Efficiency (WFE) if available,
+                                 else provisional (re-weighted to 100%)
+
+    wfe  Walk-Forward Efficiency = OOS_Sharpe / IS_Sharpe from validation.py.
+         Pass None when walk-forward hasn't been run (provisional mode).
+    """
+    if mc_result is None or mc_result.get("runs", 0) < 2:
+        return {
+            "score":       None,
+            "grade":       None,
+            "provisional": True,
+            "reason":      "Need ≥2 MC runs to compute robustness score.",
+            "axes":        {},
+        }
+
+    n_runs = mc_result["runs"]
+    per_run = mc_result.get("per_run", [])
+    ret_p5  = mc_result["return_pct"]["p5"]
+    ret_p50 = mc_result["return_pct"]["p50"]
+    ret_p95 = mc_result["return_pct"]["p95"]
+    cvar_5  = mc_result.get("cvar_5",  -50.0)
+    prob_ruin = mc_result.get("prob_ruin", 0.0)
+
+    # ── Survival score (0–100) ───────────────────────────────────────────────
+    # % of runs with return_pct > -20% (didn't catastrophically fail)
+    survived_count = sum(1 for r in per_run if r.get("return_pct", -999) > -20.0)
+    survival_rate  = survived_count / len(per_run) if per_run else 0.0
+    # Penalise negative P50: map P50 from -100..+50 → 0..100
+    p50_component  = max(0.0, min(100.0, (ret_p50 + 100.0) / 150.0 * 100.0))
+    survival_score = 0.6 * survival_rate * 100.0 + 0.4 * p50_component
+
+    # ── MC Stability score (0–100) ───────────────────────────────────────────
+    p5_positive   = 100.0 if ret_p5 > 0 else max(0.0, (ret_p5 + 50.0) / 50.0 * 50.0)
+    spread        = abs(ret_p95 - ret_p5)
+    spread_score  = max(0.0, 100.0 - spread)  # wider spread = less stable
+    mc_stability  = 0.5 * p5_positive + 0.5 * spread_score
+
+    # ── Tail Safety score (0–100) ────────────────────────────────────────────
+    # CVaR: map [-100, 0] → [0, 100]
+    cvar_score  = max(0.0, min(100.0, (cvar_5 + 100.0) / 100.0 * 100.0))
+    ruin_score  = max(0.0, (1.0 - prob_ruin) * 100.0)
+    tail_safety = 0.5 * cvar_score + 0.5 * ruin_score
+
+    # ── Overfit Resistance score (0–100) ─────────────────────────────────────
+    provisional = wfe is None
+    if wfe is not None:
+        # WFE < 0.3 → 0, WFE 0.5 → 50, WFE >= 1.0 → 100
+        overfit_score = max(0.0, min(100.0, wfe * 100.0))
+    else:
+        overfit_score = None  # excluded; weights re-normalised below
+
+    # ── Weighted composite ───────────────────────────────────────────────────
+    w_survival   = 0.30
+    w_stability  = 0.25
+    w_tail       = 0.20
+    w_overfit    = 0.25
+
+    if overfit_score is None:
+        total_w     = w_survival + w_stability + w_tail
+        trs = (w_survival * survival_score +
+               w_stability * mc_stability +
+               w_tail      * tail_safety) / total_w
+    else:
+        trs = (w_survival * survival_score +
+               w_stability * mc_stability +
+               w_tail      * tail_safety +
+               w_overfit   * overfit_score)
+
+    trs = round(max(0.0, min(100.0, trs)), 1)
+
+    # ── Grade mapping ─────────────────────────────────────────────────────────
+    if   trs >= 90: grade = "A+"
+    elif trs >= 80: grade = "A"
+    elif trs >= 70: grade = "B"
+    elif trs >= 60: grade = "C"
+    elif trs >= 50: grade = "D"
+    else:           grade = "F"
+
+    axes = {
+        "survival":   round(survival_score, 1),
+        "stability":  round(mc_stability,   1),
+        "tail_safety": round(tail_safety,   1),
+    }
+    if overfit_score is not None:
+        axes["overfit_resistance"] = round(overfit_score, 1)
+
+    return {
+        "score":       trs,
+        "grade":       grade,
+        "provisional": provisional,
+        "wfe":         round(wfe, 3) if wfe is not None else None,
+        "axes":        axes,
+        "interpretation": _trs_interpretation(trs, provisional),
+    }
+
+
+def _trs_interpretation(score: float, provisional: bool) -> str:
+    suffix = " (provisional — run walk-forward for the full score)" if provisional else ""
+    if score >= 90: return f"Excellent robustness. Strategy held up across scenarios and MC paths.{suffix}"
+    if score >= 80: return f"Good robustness. Minor weaknesses but edge appears genuine.{suffix}"
+    if score >= 70: return f"Acceptable. Strategy survives most shocks but has identifiable fragility.{suffix}"
+    if score >= 60: return f"Marginal. Significant fragility detected — review scenario tail losses.{suffix}"
+    if score >= 50: return f"Weak. High sensitivity to adverse conditions.{suffix}"
+    return f"Very weak. Strategy is likely fragile — do not deploy without further investigation.{suffix}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Low-level OHLCV perturbation helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -491,6 +614,14 @@ def run_stress_backtest(
                 d["best"] = round(float(arr.max()), 4)
             return d
 
+        final_equities = np.array([r["final_equity"] for r in per_run])
+        # CVaR/Expected Shortfall at 5%: mean of the worst 5% of returns
+        ret_cutoff   = float(np.percentile(returns, 5))
+        tail_returns = returns[returns <= ret_cutoff]
+        cvar_5 = round(float(np.mean(tail_returns)) if len(tail_returns) > 0 else ret_cutoff, 4)
+        # Probability of Ruin: fraction of runs where final equity < 50% of initial capital
+        prob_ruin = round(float(np.mean(final_equities < capital * 0.5)), 4)
+
         mc_result = {
             "runs":             n_runs,
             "return_pct":       _pcts(returns),
@@ -498,6 +629,8 @@ def run_stress_backtest(
             "sharpe":           _pcts(np.array([r["sharpe"]     for r in per_run]), include_best=False),
             "sortino":          _pcts(np.array([r["sortino"]    for r in per_run]), include_best=False),
             "win_rate":         _pcts(np.array([r["win_rate"]   for r in per_run]), include_best=False),
+            "cvar_5":           cvar_5,
+            "prob_ruin":        prob_ruin,
             "per_run":          per_run,
         }
 
@@ -544,6 +677,8 @@ def run_stress_backtest(
     stressed_eq    = equity_curves[rep_idx] if equity_curves else [capital]
     stressed_price = price_curves[rep_idx]  if price_curves  else df["close"].tolist()
 
+    robustness = compute_robustness_score(baseline, mc_result, capital)
+
     return {
         "scenario": {
             "name":         scenario.name,
@@ -568,6 +703,7 @@ def run_stress_backtest(
             "win_rate": 0, "num_trades": 0, "equity_curve": [capital],
         },
         "monte_carlo": mc_result,
+        "robustness":  robustness,
         "series": {
             "timestamps":      timestamps,
             "baseline_equity": baseline_eq,
@@ -620,6 +756,12 @@ def aggregate_stress_results(
 
     mc_result: Optional[dict] = None
     if n_runs > 1:
+        final_equities_agg = np.array([r.get("final_equity", capital) for r in per_run])
+        ret_cutoff_agg   = float(np.percentile(returns, 5))
+        tail_rets_agg    = returns[returns <= ret_cutoff_agg]
+        cvar_5_agg  = round(float(np.mean(tail_rets_agg)) if len(tail_rets_agg) > 0 else ret_cutoff_agg, 4)
+        prob_ruin_agg = round(float(np.mean(final_equities_agg < capital * 0.5)), 4)
+
         mc_result = {
             "runs":             n_runs,
             "return_pct":       _pcts(returns),
@@ -627,6 +769,8 @@ def aggregate_stress_results(
             "sharpe":           _pcts(np.array([r["sharpe"]     for r in per_run]), include_best=False),
             "sortino":          _pcts(np.array([r.get("sortino", 0) for r in per_run]), include_best=False),
             "win_rate":         _pcts(np.array([r["win_rate"]   for r in per_run]), include_best=False),
+            "cvar_5":           cvar_5_agg,
+            "prob_ruin":        prob_ruin_agg,
             "per_run":          per_run,
         }
 
@@ -666,6 +810,8 @@ def aggregate_stress_results(
     stressed_eq    = equity_curves[rep_idx] if equity_curves else [capital]
     stressed_price = price_curves[rep_idx]  if price_curves  else df["close"].tolist()
 
+    robustness = compute_robustness_score(baseline, mc_result, capital)
+
     return {
         "scenario": {
             "name":         scenario.name,
@@ -688,6 +834,7 @@ def aggregate_stress_results(
             "win_rate": 0, "num_trades": 0, "equity_curve": [capital],
         },
         "monte_carlo": mc_result,
+        "robustness":  robustness,
         "series": {
             "timestamps":      timestamps,
             "baseline_equity": baseline_eq,

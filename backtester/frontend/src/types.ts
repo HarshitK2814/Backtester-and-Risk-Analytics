@@ -185,7 +185,26 @@ export interface StressMonteCarloResult {
   sharpe:           MonteCarloStats;
   sortino?:         MonteCarloStats;
   win_rate:         MonteCarloStats;
+  cvar_5?:          number;   // Expected Shortfall at 5% (mean of worst 5% returns)
+  prob_ruin?:       number;   // Fraction of runs where final equity < 50% of capital
   per_run:          StressRunMetrics[];
+}
+
+export interface RobustnessAxes {
+  survival:           number;
+  stability:          number;
+  tail_safety:        number;
+  overfit_resistance?: number;
+}
+
+export interface RobustnessScore {
+  score:          number | null;
+  grade:          string | null;   // A+, A, B, C, D, F
+  provisional:    boolean;         // true when walk-forward wasn't run
+  wfe?:           number | null;   // Walk-Forward Efficiency
+  axes:           RobustnessAxes;
+  interpretation: string;
+  reason?:        string;          // set when score is null
 }
 
 export interface SpaghettiRun {
@@ -227,6 +246,7 @@ export interface StressResponse {
   baseline:     Partial<MetricsResults>;
   stressed:     StressRunMetrics & { equity_curve: number[] };
   monte_carlo?: StressMonteCarloResult;
+  robustness?:  RobustnessScore;
   series:       StressSeries;
 }
 
