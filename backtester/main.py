@@ -51,8 +51,9 @@ from engine.validation import run_holdout, run_walk_forward
 from engine.stress import (
     SCENARIO_PRESETS, StressScenario, run_stress_backtest,
     apply_stress, run_single_backtest, aggregate_stress_results, run_trade_mc,
-    compute_wfe, compute_robustness_score,
+    compute_wfe, compute_robustness_score, _compute_regime_vol_scales,
 )
+from engine.regimes import classify_regimes
 from frontend.report import generate_report
 from strategies import STRATEGY_REGISTRY
 
@@ -1025,6 +1026,8 @@ class StressRequest(BaseModel):
     run_validation:      bool           = Field(False, description="Run walk-forward to compute Walk-Forward Efficiency (WFE) for the Robustness Score")
     wf_window:           int            = Field(252,   description="Walk-forward train window in candles (default 252 = ~1yr daily)")
     wf_step:             int            = Field(63,    description="Walk-forward OOS step in candles (default 63 = ~1qtr daily)")
+    # Regime-aware MC: scale per-run severity by the asset's bull/bear/sideways volatility profile
+    regime_aware_mc:     bool           = Field(False, description="Scale MC run severity by regime-specific realized volatility for physically realistic path fanning")
 
 
 @app.post(f"{API_PREFIX}/stress/run", tags=["Stress"])
@@ -1108,6 +1111,7 @@ def run_stress(req: StressRequest, db: Session = Depends(get_db)):
             monte_carlo_runs    = max(1, req.monte_carlo_runs),
             extra_outlier_count = req.outlier_count,
             seed                = req.seed,
+            regime_aware_mc     = req.regime_aware_mc,
         )
     except Exception as exc:
         logger.exception("Stress backtest failed")
@@ -1310,16 +1314,41 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
                 base_slip * eff_scenario.slip_multiplier * req_snap.severity
             )
 
+        # ── Regime-aware MC setup (once before the loop) ─────────────────────
+        sse_regime_vol_scales: Optional[dict] = None
+        sse_regime_fractions:  Optional[dict] = None
+        if req_snap.regime_aware_mc:
+            try:
+                _sse_labels = await asyncio.to_thread(classify_regimes, df_snap)
+                sse_regime_vol_scales, sse_regime_fractions = await asyncio.to_thread(
+                    _compute_regime_vol_scales, df_snap, _sse_labels
+                )
+            except Exception as exc:
+                logger.warning("Regime classification (SSE) failed, using flat jitter: %s", exc)
+
         # ── MC runs ──────────────────────────────────────────────────────────
         master_rng = np_.random.default_rng(req_snap.seed)
         per_run:      list[dict]       = []
         equity_curves: list[list[float]] = []
         price_curves:  list[list[float]] = []
+        _regime_names_sse = ["bull", "bear", "sideways"]
 
         for i in range(n_runs):
-            run_seed     = int(master_rng.integers(0, 2 ** 31))
-            run_severity = (float(req_snap.severity * master_rng.uniform(0.75, 1.25))
-                            if n_runs > 1 else req_snap.severity)
+            run_seed = int(master_rng.integers(0, 2 ** 31))
+            if n_runs == 1:
+                run_severity = req_snap.severity
+            elif (req_snap.regime_aware_mc
+                  and sse_regime_vol_scales is not None
+                  and sse_regime_fractions  is not None):
+                probs = [max(0.0, sse_regime_fractions.get(r, 0.0)) for r in _regime_names_sse]
+                total_p = sum(probs)
+                probs = [p / total_p for p in probs] if total_p > 0 else [1/3, 1/3, 1/3]
+                chosen_idx    = int(master_rng.choice(len(_regime_names_sse), p=probs))
+                chosen_regime = _regime_names_sse[chosen_idx]
+                regime_scale  = sse_regime_vol_scales.get(chosen_regime, 1.0)
+                run_severity  = req_snap.severity * regime_scale * float(master_rng.uniform(0.85, 1.15))
+            else:
+                run_severity = float(req_snap.severity * master_rng.uniform(0.75, 1.25))
             perturbed_df = await asyncio.to_thread(
                 apply_stress, df_snap, eff_scenario, run_severity, run_seed
             )
@@ -1389,6 +1418,15 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
             )
             agg["robustness"]["walk_forward_windows"] = len(wf_result_sse.get("windows", [])) if wf_result_sse else 0
 
+        # Attach regime_mc_info if regime-aware MC was used
+        sse_regime_mc_info: Optional[dict] = None
+        if req_snap.regime_aware_mc and sse_regime_vol_scales is not None:
+            sse_regime_mc_info = {
+                "enabled":           True,
+                "regime_fractions":  {k: round(v, 4) for k, v in (sse_regime_fractions or {}).items()},
+                "regime_vol_scales": {k: round(v, 4) for k, v in sse_regime_vol_scales.items()},
+            }
+
         backtest_id = str(uuid.uuid4())[:8]
         yield _ev({
             "type":   "complete",
@@ -1397,8 +1435,9 @@ async def stream_stress_sse(req: StressRequest, db: Session = Depends(get_db)):
                 "symbol":      req_snap.symbol,
                 "strategy":    req_snap.strategy.upper(),
                 **agg,
-                **({"trade_mc":     trade_mc_result_sse} if trade_mc_result_sse else {}),
-                **({"walk_forward": wf_result_sse}       if wf_result_sse       else {}),
+                **({"trade_mc":       trade_mc_result_sse} if trade_mc_result_sse  else {}),
+                **({"walk_forward":   wf_result_sse}       if wf_result_sse        else {}),
+                **({"regime_mc_info": sse_regime_mc_info}  if sse_regime_mc_info   else {}),
             },
         })
 

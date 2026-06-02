@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from engine.metrics import calculate_metrics, _candles_per_day
+from engine.regimes import classify_regimes
 from engine.simulator import TradeSimulator
 
 logger = logging.getLogger(__name__)
@@ -411,6 +412,54 @@ def run_trade_mc(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Regime-aware MC helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_regime_vol_scales(df: pd.DataFrame, labels: list[str]) -> tuple[dict, dict]:
+    """
+    Compute per-regime realized volatility relative to overall vol.
+
+    Returns:
+      vol_scales  : {bull: float, bear: float, sideways: float}
+                    Each value = regime vol / overall vol (>1 = more volatile).
+      fractions   : {bull: float, bear: float, sideways: float}
+                    Fraction of candles (sums to 1.0).
+    """
+    if "close" not in df.columns or len(df) < 4:
+        ones = {"bull": 1.0, "bear": 1.0, "sideways": 1.0}
+        thirds = {"bull": 0.333, "bear": 0.333, "sideways": 0.334}
+        return ones, thirds
+
+    close   = df["close"].astype(float).values
+    safe_c  = np.where(close > 0, close, 1e-6)
+    returns = np.diff(np.log(safe_c))          # log returns (length n-1)
+
+    overall_vol = float(np.std(returns)) if len(returns) > 1 else 1e-4
+    if overall_vol < 1e-8:
+        overall_vol = 1e-4
+
+    n_candles = len(labels)
+    vol_scales: dict[str, float] = {}
+    fractions:  dict[str, float] = {}
+
+    for regime in ("bull", "bear", "sideways"):
+        cnt = labels.count(regime)
+        fractions[regime] = cnt / n_candles if n_candles > 0 else 0.0
+        # Attribute return[i] to regime label[i] (start-candle of each step)
+        mask = np.array(
+            [labels[i] == regime for i in range(min(n_candles - 1, len(returns)))],
+            dtype=bool,
+        )
+        r_sub = returns[:len(mask)][mask]
+        if len(r_sub) < 2:
+            vol_scales[regime] = 1.0
+        else:
+            vol_scales[regime] = round(float(np.std(r_sub)) / overall_vol, 4)
+
+    return vol_scales, fractions
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Low-level OHLCV perturbation helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -749,6 +798,7 @@ def run_stress_backtest(
     monte_carlo_runs:    int   = 1,
     extra_outlier_count: int   = 0,
     seed:                Optional[int] = None,
+    regime_aware_mc:     bool  = False,
 ) -> dict:
     """
     Run baseline + N stressed backtests; return aggregated results dict.
@@ -773,19 +823,50 @@ def run_stress_backtest(
         base_slip = stressed_sim_kw.get("slippage_percent", 0.001)
         stressed_sim_kw["slippage_percent"] = base_slip * eff_scenario.slip_multiplier * severity
 
+    # ── Regime-aware MC setup (computed once before the loop) ─────────────
+    regime_vol_scales: Optional[dict] = None
+    regime_fractions:  Optional[dict] = None
+    regime_labels:     Optional[list] = None
+    if regime_aware_mc:
+        try:
+            regime_labels = classify_regimes(df)
+            regime_vol_scales, regime_fractions = _compute_regime_vol_scales(df, regime_labels)
+            logger.info(
+                "Regime-aware MC: vol_scales=%s fractions=%s",
+                regime_vol_scales, regime_fractions,
+            )
+        except Exception as exc:
+            logger.warning("Regime classification failed (falling back to flat jitter): %s", exc)
+            regime_vol_scales = None
+            regime_fractions  = None
+
     # ── Monte Carlo / deterministic runs ───────────────────────────────────
     per_run: list[dict] = []
     equity_curves:   list[list[float]] = []
     price_curves:    list[list[float]] = []
 
     n_runs = max(1, monte_carlo_runs)
+    _regime_names = ["bull", "bear", "sideways"]
+
     for _ in range(n_runs):
         run_seed = int(master_rng.integers(0, 2 ** 31))
-        # Vary shock magnitude ±25% per run so paths fan out realistically.
-        # Without this, all runs share the same severity and only differ in
-        # *when* the shock starts — producing near-identical paths.
-        run_severity = (severity * float(master_rng.uniform(0.75, 1.25))
-                        if n_runs > 1 else severity)
+        if n_runs == 1:
+            run_severity = severity
+        elif regime_aware_mc and regime_vol_scales is not None and regime_fractions is not None:
+            # Sample a regime weighted by its share of the dataset, then scale
+            # severity by that regime's realized vol vs overall vol.  Tighter
+            # ±15% noise because the regime already provides the main variation.
+            probs = [max(0.0, regime_fractions.get(r, 0.0)) for r in _regime_names]
+            total_p = sum(probs)
+            probs = [p / total_p for p in probs] if total_p > 0 else [1/3, 1/3, 1/3]
+            chosen_idx    = int(master_rng.choice(len(_regime_names), p=probs))
+            chosen_regime = _regime_names[chosen_idx]
+            regime_scale  = regime_vol_scales.get(chosen_regime, 1.0)
+            run_severity  = severity * regime_scale * float(master_rng.uniform(0.85, 1.15))
+        else:
+            # Original flat ±25% jitter
+            run_severity = severity * float(master_rng.uniform(0.75, 1.25))
+
         perturbed_df = apply_stress(df, eff_scenario, severity=run_severity, seed=run_seed)
         m = _single_backtest(perturbed_df, strategy_cls, strategy_params,
                              stressed_sim_kw, capital)
@@ -887,7 +968,15 @@ def run_stress_backtest(
 
     robustness = compute_robustness_score(baseline, mc_result, capital)
 
-    return {
+    regime_mc_info: Optional[dict] = None
+    if regime_aware_mc and regime_vol_scales is not None:
+        regime_mc_info = {
+            "enabled":          True,
+            "regime_fractions": {k: round(v, 4) for k, v in (regime_fractions or {}).items()},
+            "regime_vol_scales": {k: round(v, 4) for k, v in regime_vol_scales.items()},
+        }
+
+    result: dict = {
         "scenario": {
             "name":         scenario.name,
             "display_name": getattr(scenario, "display_name", scenario.name),
@@ -922,6 +1011,9 @@ def run_stress_backtest(
             "spaghetti":       spaghetti_data,
         },
     }
+    if regime_mc_info:
+        result["regime_mc_info"] = regime_mc_info
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

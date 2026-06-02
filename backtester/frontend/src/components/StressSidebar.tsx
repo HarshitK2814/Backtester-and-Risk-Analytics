@@ -287,6 +287,7 @@ export const DEFAULT_STRESS_FORM: StressFormState = {
   runValidation:   false,
   wfWindow:        252,
   wfStep:          63,
+  regimeAwareMC:   false,
 };
 
 // ── Shared input class (matches backtest sidebar style) ───────────────────────
@@ -751,6 +752,28 @@ export default function StressSidebar({ form, onChange, onRun, loading }: Props)
                 </div>
               </div>
             </div>
+          )}
+        </section>
+
+        {/* ── Regime-aware MC ─────────────────────────────────────────── */}
+        <section>
+          <div className="flex items-center justify-between mb-1">
+            <label className={lbl}>
+              Regime-aware MC
+              <span className="ml-1 text-[10px] font-normal opacity-60">physically realistic path fanning</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => set({ regimeAwareMC: !form.regimeAwareMC })}
+              className={`relative w-10 h-5 rounded-full transition-colors ${form.regimeAwareMC ? 'bg-[var(--tv-accent)]' : 'bg-gray-200'}`}
+            >
+              <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.regimeAwareMC ? 'translate-x-5' : 'translate-x-0'}`} />
+            </button>
+          </div>
+          {form.regimeAwareMC && (
+            <p className="text-[10px] text-[var(--tv-muted)] bg-emerald-50 rounded-lg px-2 py-1.5 border border-emerald-100 mt-1">
+              Classifies the dataset into bull / bear / sideways regimes and scales each MC run's shock intensity by the regime's realized volatility. Bear-regime runs fan wider; bull-regime runs cluster tighter — matching how real markets behave.
+            </p>
           )}
         </section>
 

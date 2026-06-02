@@ -6,7 +6,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   Brush, ReferenceLine,
 } from 'recharts';
-import { StressResponse, RobustnessScore, TradeMCResult } from '../types';
+import { StressResponse, RobustnessScore, TradeMCResult, RegimeMCInfo } from '../types';
 import MCPathsCanvas, { MCRun } from './MCPathsCanvas';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -548,12 +548,50 @@ function TradeMCCard({ tmc }: { tmc: TradeMCResult }) {
   );
 }
 
+// ─── Regime MC Info Card ──────────────────────────────────────────────────────
+
+function RegimeMCInfoCard({ info }: { info: RegimeMCInfo }) {
+  const regimes = ['bull', 'bear', 'sideways'] as const;
+  const COLORS: Record<string, string> = { bull: '#22c55e', bear: '#ef4444', sideways: '#f59e0b' };
+  const LABELS: Record<string, string> = { bull: 'Bull', bear: 'Bear', sideways: 'Sideways' };
+
+  return (
+    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-600 text-white">
+          Regime-aware MC active
+        </span>
+        <span className="text-[10px] text-[var(--tv-muted)]">
+          Severity scaled by regime realized volatility — bear runs fan wider, bull runs cluster tighter
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        {regimes.map(r => {
+          const frac = info.regime_fractions[r] ?? 0;
+          const scale = info.regime_vol_scales[r] ?? 1;
+          return (
+            <div key={r} className="bg-white rounded-lg p-3 border border-gray-100 text-center">
+              <div className="w-2 h-2 rounded-full mx-auto mb-1.5" style={{ background: COLORS[r] }} />
+              <p className="text-xs font-bold text-[var(--tv-text)]">{LABELS[r]}</p>
+              <p className="text-[10px] text-[var(--tv-muted)] mt-0.5">{(frac * 100).toFixed(1)}% of data</p>
+              <p className="text-[11px] font-semibold mt-1" style={{ color: scale > 1.15 ? '#ef4444' : scale < 0.85 ? '#22c55e' : '#f59e0b' }}>
+                {scale.toFixed(2)}× vol
+              </p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface Props { result: StressResponse; currency: string; locale: string; }
 
 export default function StressResults({ result, currency, locale }: Props) {
-  const { baseline, stressed, monte_carlo: mc, series, scenario, robustness, trade_mc, walk_forward: wf } = result;
+  const { baseline, stressed, monte_carlo: mc, series, scenario, robustness, trade_mc, walk_forward: wf, regime_mc_info } = result;
 
   const baseRet     = (baseline.total_return_pct   ?? 0) as number;
   const baseSharpe  = (baseline.sharpe_ratio        ?? 0) as number;
@@ -897,6 +935,9 @@ export default function StressResults({ result, currency, locale }: Props) {
 
           {/* Trade-level MC card */}
           {trade_mc && trade_mc.runs > 0 && <TradeMCCard tmc={trade_mc} />}
+
+          {/* Regime-aware MC info */}
+          {regime_mc_info?.enabled && <RegimeMCInfoCard info={regime_mc_info} />}
 
           {/* P5/P50/P95 band chart */}
           {series.equity_fan && (

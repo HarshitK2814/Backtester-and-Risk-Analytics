@@ -249,6 +249,12 @@ export interface TradeMCResult {
   note?:            string;
 }
 
+export interface RegimeMCInfo {
+  enabled:            boolean;
+  regime_fractions:   Record<string, number>;   // bull/bear/sideways → fraction of dataset
+  regime_vol_scales:  Record<string, number>;   // bull/bear/sideways → vol relative to overall
+}
+
 export interface StressResponse {
   backtest_id:  string;
   symbol:       string;
@@ -265,6 +271,7 @@ export interface StressResponse {
   robustness?:   RobustnessScore;
   trade_mc?:     TradeMCResult;
   walk_forward?: ValidationData;
+  regime_mc_info?: RegimeMCInfo;
   series:        StressSeries;
 }
 
@@ -324,6 +331,8 @@ export interface StressFormState {
   runValidation:       boolean;
   wfWindow:            number;    // train window in candles
   wfStep:              number;    // OOS step in candles
+  // Regime-aware MC
+  regimeAwareMC:       boolean;
 }
 
 export interface FormState {
