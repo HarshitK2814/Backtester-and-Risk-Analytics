@@ -1123,7 +1123,7 @@ def run_stress(req: StressRequest, db: Session = Depends(get_db)):
         try:
             wf_result = run_walk_forward(
                 df              = df,
-                strategy_name   = strategy_name,
+                strategy_name   = req.strategy.upper(),
                 strategy_params = strategy_params,
                 sim_kwargs      = {**sim_kwargs, "capital": req.capital},
                 capital         = req.capital,
